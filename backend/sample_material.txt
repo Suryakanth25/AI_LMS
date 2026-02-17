@@ -1,0 +1,12 @@
+Operating Systems - Memory Management (Paging)
+
+Paging is a memory management scheme that eliminates the need for contiguous allocation of physical memory. This scheme permits the physical address space of a process to be non-contiguous.
+
+- **Pages**: The logical address space is broken into fixed-sized blocks called pages.
+- **Frames**: Physical memory is broken into fixed-sized blocks called frames.
+- **Page Table**: A data structure used by the virtual memory system in a computer operating system to store the mapping between virtual addresses and physical addresses.
+
+Paging avoids external fragmentation and the need for compaction. However, it introduces internal fragmentation if the last page of a process does not perfectly fit the page size.
+
+Address Translation:
+The CPU generates a logical address divided into two parts: a page number (p) and a page offset (d). The page number is used as an index into a page table. The page table contains the base address of each page in physical memory. This base address is combined with the page offset to define the physical memory address that is sent to the memory unit.

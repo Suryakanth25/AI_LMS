@@ -1,0 +1,78 @@
+Operating Systems - Study Material
+
+Chapter 1: Types of Operating Systems
+
+An operating system (OS) is system software that manages computer hardware, software resources, and provides common services for computer programs. Operating systems can be classified into several types:
+
+1. Batch Operating Systems: These systems collect jobs (programs and data) into batches and process them sequentially without user interaction. Examples include early mainframe systems. The main advantage is efficient CPU utilization, but the disadvantage is lack of interaction between user and job.
+
+2. Time-Sharing Operating Systems: These allow multiple users to share system resources simultaneously. The CPU switches between tasks so frequently that users can interact with each program while it is running. UNIX is a classic example. Time-sharing uses CPU scheduling and multiprogramming to provide a small portion of time to each user.
+
+3. Real-Time Operating Systems (RTOS): These are designed to process data and events that have critically defined time constraints. They are used in embedded systems, medical devices, and industrial control systems. RTOS can be hard real-time (absolute deadlines) or soft real-time (flexible deadlines).
+
+4. Distributed Operating Systems: These manage a group of independent computers and make them appear as a single computer. Resources of multiple machines are shared transparently. Examples include distributed file systems and cloud computing platforms.
+
+5. Network Operating Systems: These provide services to computers connected to a network. They handle network functions like file sharing, printer sharing, and user authentication across the network.
+
+Chapter 2: OS Architecture
+
+Operating system architecture refers to the structural design of the operating system. Common architectures include:
+
+1. Monolithic Architecture: The entire OS runs as a single program in kernel mode. All OS services run in the kernel address space. Linux and early UNIX systems use this architecture. Advantages include efficiency due to direct function calls. Disadvantages include difficulty in maintenance and debugging.
+
+2. Microkernel Architecture: Only essential services (IPC, memory management, scheduling) run in kernel mode. Other services run in user space as servers. Mach and QNX are examples. Advantages include modularity and reliability. The disadvantage is potential performance overhead due to message passing.
+
+3. Layered Architecture: The OS is decomposed into layers, each built on top of lower layers. Each layer uses functions and services of only lower-level layers. THE system is modular but can suffer from performance issues due to layer traversal.
+
+4. Hybrid Architecture: Combines elements of monolithic and microkernel designs. Windows NT and macOS use hybrid architectures to balance performance and modularity.
+
+Chapter 3: Process Scheduling
+
+Process scheduling is the activity of the process manager that handles the removal of the running process from the CPU and the selection of another process on the basis of a particular strategy.
+
+Types of Schedulers:
+1. Long-term Scheduler (Job Scheduler): Selects which processes should be brought into the ready queue from the job pool. Controls the degree of multiprogramming.
+
+2. Short-term Scheduler (CPU Scheduler): Selects which process should be executed next and allocates CPU. Makes decisions very frequently (milliseconds). Must be fast.
+
+3. Medium-term Scheduler: Handles swapping. Removes processes from memory (swapping out) and reintroduces them later (swapping in).
+
+CPU Scheduling Algorithms:
+
+1. First-Come, First-Served (FCFS): Processes are executed in the order they arrive. Simple but can cause the convoy effect where short processes wait for long processes.
+
+2. Shortest Job First (SJF): Selects the process with the smallest execution time. Can be preemptive (Shortest Remaining Time First) or non-preemptive. Optimal average waiting time but requires knowing burst times in advance.
+
+3. Priority Scheduling: Each process is assigned a priority. CPU is allocated to the process with highest priority. Can cause starvation of low-priority processes. Aging is used to prevent starvation.
+
+4. Round Robin (RR): Each process gets a fixed time quantum (typically 10-100ms). After the quantum expires, the process is preempted and added to the end of the ready queue. Good for time-sharing systems. Performance depends on time quantum size.
+
+5. Multilevel Queue Scheduling: Ready queue is partitioned into separate queues (foreground/interactive and background/batch). Each queue has its own scheduling algorithm.
+
+Chapter 4: Deadlocks
+
+A deadlock is a situation where a set of processes are blocked because each process is holding a resource and waiting for another resource held by another process.
+
+Necessary Conditions for Deadlock (all four must hold simultaneously):
+1. Mutual Exclusion: At least one resource must be held in a non-shareable mode.
+2. Hold and Wait: A process holding at least one resource is waiting to acquire additional resources held by other processes.
+3. No Preemption: Resources cannot be forcibly taken away from a process; they must be released voluntarily.
+4. Circular Wait: A set of processes {P0, P1, ..., Pn} where P0 waits for a resource held by P1, P1 waits for P2, ..., and Pn waits for P0.
+
+Deadlock Handling Strategies:
+
+1. Deadlock Prevention: Ensure at least one of the four necessary conditions cannot hold.
+   - Eliminate Mutual Exclusion: Not always possible (some resources are inherently non-shareable).
+   - Eliminate Hold and Wait: Require processes to request all resources at once.
+   - Allow Preemption: If a process requests a resource it cannot get, release all held resources.
+   - Eliminate Circular Wait: Impose a total ordering on resource types.
+
+2. Deadlock Avoidance: Use algorithms to ensure the system never enters a deadlock state.
+   - Banker's Algorithm: Before allocating resources, check if the resulting state is safe. A safe state is one where there exists a sequence of process completions.
+   - Resource Allocation Graph: For single-instance resources, use a graph to detect potential deadlocks.
+
+3. Deadlock Detection and Recovery:
+   - Detection: Periodically check for deadlocks using algorithms (e.g., wait-for graph for single instances, matrix-based for multiple instances).
+   - Recovery: Process termination (abort all or one at a time) or resource preemption.
+
+4. Deadlock Ignorance (Ostrich Algorithm): Simply ignore the problem. Used by most operating systems including UNIX and Windows, as deadlocks occur infrequently and the overhead of prevention is high.
