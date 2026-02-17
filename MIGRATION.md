@@ -49,6 +49,12 @@ Git does not store your private data. You **MUST** manually copy these from your
    ```
 
 ---
-### Re-Indexing (If materials don't load)
-If you see your subjects but no "Study Content" is found during generation, trigger a re-index:
-- Go to **Dashboard** -> **Subject** -> Tap **Re-Index** (or use the API tool).
+### Re-Indexing & Upskill (If materials don't load)
+If you see your subjects but no "Study Content" is found during generation, or your **Upskill (Training)** status is wiped:
+1. **Restore Data**: Ensure `council.db` was copied. This contains your "vetted" questions which are the source for Upskill.
+2. **Re-Index**: Go to **Dashboard** -> **Subject** -> Tap **Re-Index** to rebuild AI memory.
+3. **Training**: If you copy `council.db`, your training progress and Skill version will be preserved. If you start fresh, you will need to vet 5+ questions again to enable the **Upskill** button.
+
+### What about the Upskill (Training) feature?
+- **Is it pushed?** Yes, the entire Training/Skill pipeline is in the repository.
+- **Will it work?** Yes, as long as you have the Ollama models (`phi3.5`, `gemma2:2b`, `qwen2.5:3b`) installed and copying the `council.db` ensures you don't lose the training history.
