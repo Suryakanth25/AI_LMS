@@ -1,46 +1,54 @@
-# Migration Guide: AI_LMS
+# Migration Guide: Moving to Council Prototype 🚀
 
-This guide explains how to move your project to a new system while ensuring everything works perfectly.
+This guide explains how to migrate from the old web-based system to the new **Council Prototype** on a new machine.
 
-## Option 1: Git (Recommended for Code)
-Since your system currently doesn't have `git` in the terminal path, you would need to install it first.
-1. **Install Git**: Download from [git-scm.com](https://git-scm.com/).
-2. **Push Code**: Use a service like GitHub or GitLab. 
-   - I have already created a `.gitignore` in your root folder. This ensures you don't push 1GB of "noise" (like `node_modules`).
-3. **Manual Data**: Push only the code. You **MUST** manually copy the `council.db` and `uploads/` folder to the new system.
+## 1. Codebase Setup
+Clone the official repository from GitHub:
+```bash
+git clone https://github.com/Suryakanth25/AI_LMS.git
+cd AI_LMS/council-prototype
+```
 
-## Option 2: Zipping (The "Snapshot" Way)
-If you want a single file to move, follow these steps to keep the size small:
-1. **Delete node_modules**: In `frontend/`, delete the `node_modules` folder (this takes up 90% of the space and is easy to reinstall).
-2. **Zip the rest**: Zip the `council-prototype` folder.
-3. **Move and Unzip**: On the new system, unzip it.
+## 2. AI Intelligence (Ollama)
+The brain of the system relies on locally running LLMs. Install [Ollama](https://ollama.com/) and download these specific models:
 
-## Critical Data Checklist
-Regardless of how you move the code, these folders/files are your "Data":
-- `backend/council.db`: Your entire database (subjects, questions, etc.).
-- `backend/uploads/`: All your PDF/Docx files.
-- `backend/chromadb_data/`: Your AI "Memory" (can be rebuilt using the Re-Index tool, but good to keep).
+1. **Logician/Chairman**: `ollama pull phi3.5` (or `llama3.2` for HP Victus)
+2. **Creative Agent**: `ollama pull gemma2:2b`
+3. **Technician Agent**: `ollama pull qwen2.5:3b`
 
-## On the New System
-1. **Ollama**: Install Ollama and pull these models:
+> [!TIP]
+> Use `llama3.2` if the HP Victus GPU (4GB) is limited on memory, as it is very efficient.
+
+## 3. Data Migration (Critical)
+Git does not store your private data. You **MUST** manually copy these from your old system's `backend/` folder:
+
+- **`council.db`**: Your entire database (subjects, rubrics, questions).
+- **`uploads/` folder**: All uploaded study materials/PDFs.
+- **`chromadb_data/`**: (Optional) Your RAG vector memory. If you don't copy this, use the Re-Index tool in the Dashboard.
+
+## 4. Backend Setup
+1. Open a terminal in `backend/`.
+2. Install dependencies:
    ```bash
-   ollama pull phi3.5
-   ollama pull gemma2:2b
-   ollama pull qwen2.5:3b
-   ```
-2. **Backend**:
-   ```bash
-   cd backend
    pip install -r requirements.txt
+   ```
+3. Start the server:
+   ```bash
    python main.py
    ```
-3. **Frontend**:
+
+## 5. Frontend Setup
+1. Open a terminal in `frontend/`.
+2. Install dependencies:
    ```bash
-   cd frontend
    npm install
-   npx expo start
+   ```
+3. Start the mobile environment:
+   ```bash
+   npx expo start --clear
    ```
 
-## Final Step: Re-Index RAG
-Once everything is running, call the re-index tool I built for you to ensure the AI "remembers" all your files:
-`POST http://localhost:8000/api/tools/reindex-subject/{subject_id}`
+---
+### Re-Indexing (If materials don't load)
+If you see your subjects but no "Study Content" is found during generation, trigger a re-index:
+- Go to **Dashboard** -> **Subject** -> Tap **Re-Index** (or use the API tool).
