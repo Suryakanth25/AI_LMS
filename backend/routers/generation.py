@@ -170,11 +170,23 @@ async def _run_generation(job_id: int, rubric_id: int):
                 sample_qs_text = "\n".join([f"- {sq.text} ({sq.difficulty})" for sq in sample_qs])
 
                 # Get Syllabus Data
-                syllabus_data = qp["syllabus_data"]
+                syllabus_data = qp["syllabus_data"] if isinstance(qp["syllabus_data"], dict) else {}
 
-                # Task 3: Taxonomy-Driven Query Generation
+                # Task 3: Taxonomy-Driven Query Generation & Content Enrichment
                 unit_id = qp["unit_id"]
                 los = db.query(LearningOutcome).filter(LearningOutcome.unit_id == unit_id).all()
+                
+                # Fetch Mapped COs for this unit
+                from models import UnitCOMapping
+                co_mappings = db.query(UnitCOMapping).filter(UnitCOMapping.unit_id == unit_id).all()
+                mapped_cos = {}
+                for m in co_mappings:
+                    if m.course_outcome:
+                        mapped_cos[m.course_outcome.code] = m.course_outcome.description
+
+                # Inject into syllabus_data for Swarm context
+                syllabus_data["los"] = {lo.code: lo.description for lo in los}
+                syllabus_data["cos"] = mapped_cos
                 
                 # Build Search Query: Use primary LO or Topic Name
                 search_query = qp["topic"]

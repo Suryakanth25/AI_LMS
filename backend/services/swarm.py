@@ -303,17 +303,25 @@ RULES:
     timings["agent_c"] = agent_c_time
 
     # --- Phase 4: Chairman selects best ---
-    chairman_prompt = f"""You are The Chairman. Select the BEST question.
+    chairman_prompt = f"""You are The Chairman of the Academic Council. Your role is to select the absolute BEST question draft and provide a rigorous pedagogical justification.
 
 STUDY MATERIAL: {rag_context}
 {syllabus_context}
+
 DRAFT 1 (Logician): {agent_a_output}
 REVIEW: {agent_b_output}
 DRAFT 2 (Technician): {agent_c_output}
 
-Select best, verify against material and syllabus alignment, assign confidence 1.0-10.0.
-OUTPUT JSON format: {{"selected_question":<question json>,"confidence_score":<1.0-10.0>,"selected_from":"Agent A/Agent C/Combined","reasoning":"[PROOF OF ALIGNMENT] 1. Matches CO_X because... 2. Matches Bloom's Level X because... 3. Factual accuracy..."}}
+Your Selection Criteria:
+1. FACTUAL ACCURACY: Is the question 100% grounded in the Study Material?
+2. SYLLABUS ALIGNMENT: Does it map perfectly to the provided Course Outcomes (COs) and Learning Outcomes (LOs)?
+3. PEDAGOGICAL DEPTH: Is the language clear? Does it match the intended difficulty and Bloom's level?
+
+OUTPUT JSON format: {{"selected_question":<question json>,"confidence_score":<1.0-10.0>,"selected_from":"Agent A/Agent C/Combined","reasoning":"[PROOF OF ALIGNMENT] Provide a detailed paragraph (100+ words). You MUST cite specific CO codes (e.g., CO-1) and LO codes (e.g., LO-1.1) from the syllabus context provided above. Explain WHY this specific question is the most pedagogically sound choice and how it relates to the study material facts."}}
+
 RULES:
+- "reasoning" MUST be a detailed, professional paragraph. Do not be brief.
+- citation of CO/LO codes is MANDATORY.
 - Output RAW JSON ONLY.
 - NO COMMENTS inside the JSON.
 - NO MARKDOWN.
