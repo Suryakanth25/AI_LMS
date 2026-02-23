@@ -118,6 +118,7 @@ class SampleQuestion(Base):
     text = Column(Text, nullable=False)
     question_type = Column(String(50)) # MCQ, Short, Essay
     difficulty = Column(String(50))    # Easy, Medium, Hard
+    source_file = Column(String(255), nullable=True)  # Original uploaded filename
     created_at = Column(DateTime, default=datetime.utcnow)
 
     topic = relationship("Topic", back_populates="sample_questions")

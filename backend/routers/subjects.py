@@ -400,22 +400,109 @@ def update_topic_syllabus(topic_id: int, data: TopicUpdateSyllabus, db: Session 
     return {"message": "Syllabus updated", "syllabus_data": topic.syllabus_data}
 
 
-@router.post("/topics/{topic_id}/sample-questions", response_model=SampleQuestionResponse)
-def create_sample_question(topic_id: int, data: SampleQuestionCreate, db: Session = Depends(get_db)):
+@router.post("/topics/{topic_id}/sample-questions")
+async def upload_sample_questions(
+    request: Request,
+    topic_id: int,
+    db: Session = Depends(get_db),
+):
+    """Upload a file (PDF, DOCX, CSV, XLSX) containing sample questions."""
     topic = db.query(Topic).filter(Topic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
-    sq = SampleQuestion(
-        topic_id=topic_id,
-        text=data.text,
-        question_type=data.question_type,
-        difficulty=data.difficulty
-    )
-    db.add(sq)
+    form = await request.form()
+    file = form.get("file")
+    default_type = str(form.get("question_type", "SHORT")).strip() or "SHORT"
+    default_difficulty = str(form.get("difficulty", "Medium")).strip() or "Medium"
+
+    if not file:
+        raise HTTPException(status_code=400, detail="Missing 'file' field")
+
+    filename = getattr(file, "filename", None)
+    if not filename:
+        raise HTTPException(status_code=400, detail="No filename found")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ("pdf", "docx", "csv", "xlsx", "xls"):
+        raise HTTPException(status_code=400, detail="Only PDF, DOCX, CSV, and Excel files are supported")
+
+    content = await file.read()
+
+    questions_data = []
+
+    if ext == "csv":
+        import csv as csv_mod
+        import io
+        text_data = content.decode("utf-8-sig")
+        reader = csv_mod.reader(io.StringIO(text_data))
+        for row in reader:
+            # Concatenate all non-empty cells in the row
+            text = " | ".join(str(cell).strip() for cell in row if str(cell).strip())
+            if text and len(text) > 5:
+                questions_data.append({
+                    "text": text,
+                    "question_type": default_type,
+                    "difficulty": default_difficulty,
+                })
+
+    elif ext in ("xlsx", "xls"):
+        import openpyxl
+        import io
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        ws = wb.active
+        for row in ws.iter_rows(values_only=True):
+            # Concatenate all non-empty cells in the row
+            text = " | ".join(str(cell).strip() for cell in row if cell is not None and str(cell).strip())
+            if text and len(text) > 5:
+                questions_data.append({
+                    "text": text,
+                    "question_type": default_type,
+                    "difficulty": default_difficulty,
+                })
+        wb.close()
+
+    elif ext in ("pdf", "docx"):
+        import tempfile
+        tmp_path = os.path.join(tempfile.gettempdir(), f"sq_{int(time.time())}_{filename}")
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(content)
+            from services import rag
+            raw_text = rag.extract_text(tmp_path, ext)
+
+            import re
+            lines = re.split(r'\n\s*(?:\d+[\.)\]]\s*|Q\d+[\.)\]:\s])', raw_text)
+            for line in lines:
+                cleaned = line.strip()
+                if cleaned and len(cleaned) > 15:
+                    questions_data.append({
+                        "text": cleaned,
+                        "question_type": default_type,
+                        "difficulty": default_difficulty,
+                    })
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    if not questions_data:
+        raise HTTPException(status_code=400, detail="No questions could be extracted from the file. For CSV/Excel, ensure a 'text' column exists.")
+
+    # Save all extracted questions
+    created = []
+    for qd in questions_data:
+        sq = SampleQuestion(
+            topic_id=topic_id,
+            text=qd["text"],
+            question_type=qd["question_type"],
+            difficulty=qd["difficulty"],
+            source_file=filename,
+        )
+        db.add(sq)
+        created.append(sq)
     db.commit()
-    db.refresh(sq)
-    return sq
+
+    return {"message": f"Extracted {len(created)} questions from '{filename}'", "count": len(created)}
 
 
 @router.get("/topics/{topic_id}/sample-questions", response_model=list[SampleQuestionResponse])

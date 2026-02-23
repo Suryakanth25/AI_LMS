@@ -150,6 +150,7 @@ class SampleQuestionResponse(BaseModel):
     text: str
     question_type: str
     difficulty: str
+    source_file: Optional[str] = None
     created_at: datetime
 
     class Config:

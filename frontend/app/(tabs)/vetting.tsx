@@ -744,7 +744,7 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                         {expandedAgent === 'rag' ? <ChevronUp size={14} color="#9CA3AF" /> : <ChevronDown size={14} color="#9CA3AF" />}
                                     </TouchableOpacity>
                                     {expandedAgent === 'rag' && (
-                                        <ScrollView className="bg-white border border-gray-100 p-3 rounded-b-lg max-h-40">
+                                        <ScrollView className="bg-white border border-gray-100 p-3 rounded-b-lg max-h-96">
                                             <Text className="text-gray-500 text-xs">{detail.rag_context_used}</Text>
                                         </ScrollView>
                                     )}

@@ -12,7 +12,7 @@ import Slider from '@react-native-community/slider';
 import {
     getSubjectDetail, getMaterials, uploadMaterial, deleteMaterial, getRagStatus,
     createUnit, deleteUnit, createTopic, deleteTopic,
-    updateTopicSyllabus, createSampleQuestion, deleteSampleQuestion, getSampleQuestions,
+    updateTopicSyllabus, uploadSampleQuestions, deleteSampleQuestion, getSampleQuestions,
     createLO, deleteLO, createCO, deleteCO, updateUnitCOMapping, getUnitCOMapping,
     updateLO, updateCO,
 } from '@/services/api';
@@ -75,11 +75,8 @@ export default function SubjectDetailScreen() {
     const [activeUnitForMapping, setActiveUnitForMapping] = useState<any>(null);
     const [selectedCOs, setSelectedCOs] = useState<Set<number>>(new Set());
     // Sample Question Modal
-    const [sqModal, setSqModal] = useState(false);
-    const [activeTopicForSq, setActiveTopicForSq] = useState<any>(null);
-    const [sqForm, setSqForm] = useState({ text: '', type: 'MCQ', difficulty: 'Medium' });
     const [topicQuestions, setTopicQuestions] = useState<Record<number, any[]>>({}); // Cache questions
-    const [sampleQuestionMap, setSampleQuestionMap] = useState<Record<number, string>>({}); // Inline input state
+    const [uploadingSqTopicId, setUploadingSqTopicId] = useState<number | null>(null); // Track which topic is uploading
 
     useEffect(() => { fetchAll(); }, [numId]);
 
@@ -306,37 +303,31 @@ export default function SubjectDetailScreen() {
     };
 
     // --- Sample Questions Actions ---
-    const openSqModal = (topic: any) => {
-        setActiveTopicForSq(topic);
-        setSqForm({ text: '', type: 'MCQ', difficulty: 'Medium' });
-        setSqModal(true);
-    };
-
-    const handleAddSq = async () => {
-        if (!activeTopicForSq || !sqForm.text.trim()) return;
+    const handleUploadSampleQuestions = async (topicId: number) => {
         try {
-            await createSampleQuestion(activeTopicForSq.id, {
-                text: sqForm.text,
-                question_type: sqForm.type,
-                difficulty: sqForm.difficulty
+            const result = await DocumentPicker.getDocumentAsync({
+                type: '*/*',
             });
-            setSqModal(false);
-            fetchSampleQuestions(activeTopicForSq.id); // Refresh local list
-        } catch (e) { Alert.alert('Error', 'Failed to add question'); }
-    };
+            if (result.canceled) return;
 
-    const handleAddSampleQInline = async (topicId: number) => {
-        const text = sampleQuestionMap[topicId];
-        if (!text || !text.trim()) return;
-        try {
-            await createSampleQuestion(topicId, {
-                text: text.trim(),
-                question_type: 'SHORT', // Default to short answer for RAG context
-                difficulty: 'Medium'
-            });
-            setSampleQuestionMap(prev => ({ ...prev, [topicId]: '' }));
+            const file = result.assets[0];
+            setUploadingSqTopicId(topicId);
+
+            let formFile: any;
+            if (Platform.OS === 'web' && (file as any).file) {
+                formFile = (file as any).file;
+            } else {
+                formFile = { uri: file.uri, name: file.name, type: file.mimeType || 'application/octet-stream' } as any;
+            }
+
+            const res = await uploadSampleQuestions(topicId, formFile);
+            Alert.alert('Success', res.message || `Imported ${res.count} questions`);
             fetchSampleQuestions(topicId);
-        } catch (e) { Alert.alert('Error', 'Failed to add question'); }
+        } catch (e: any) {
+            Alert.alert('Error', e?.message || 'Failed to upload sample questions');
+        } finally {
+            setUploadingSqTopicId(null);
+        }
     };
 
     // --- Mapping Actions ---
@@ -643,30 +634,28 @@ export default function SubjectDetailScreen() {
                                                                 <Text style={{ color: '#2563EB', fontSize: 11, fontWeight: 'bold' }}>Configure Bloom's Taxonomy</Text>
                                                             </TouchableOpacity>
 
-                                                            {/* Inline Sample Question Input */}
-                                                            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                                                                <TextInput
-                                                                    style={{ flex: 1, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 6, padding: 8, fontSize: 11, color: '#374151' }}
-                                                                    placeholder="Add Sample Question (for RAG context)..."
-                                                                    placeholderTextColor="#9CA3AF"
-                                                                    value={sampleQuestionMap[topic.id] || ''}
-                                                                    onChangeText={(t) => setSampleQuestionMap(prev => ({ ...prev, [topic.id]: t }))}
-                                                                />
-                                                                <TouchableOpacity
-                                                                    onPress={() => handleAddSampleQInline(topic.id)}
-                                                                    style={{ backgroundColor: '#10B981', padding: 8, borderRadius: 6, justifyContent: 'center' }}
-                                                                >
-                                                                    <Plus size={16} color="white" />
-                                                                </TouchableOpacity>
-                                                            </View>
+                                                            {/* Upload Sample Questions File */}
+                                                            <TouchableOpacity
+                                                                onPress={() => handleUploadSampleQuestions(topic.id)}
+                                                                disabled={uploadingSqTopicId === topic.id}
+                                                                style={{ backgroundColor: uploadingSqTopicId === topic.id ? '#9CA3AF' : '#10B981', padding: 8, borderRadius: 6, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 }}
+                                                            >
+                                                                <Upload size={14} color="white" />
+                                                                <Text style={{ color: 'white', fontSize: 11, fontWeight: 'bold' }}>
+                                                                    {uploadingSqTopicId === topic.id ? 'Uploading...' : 'Upload Sample Questions (PDF, DOCX, CSV, Excel)'}
+                                                                </Text>
+                                                            </TouchableOpacity>
                                                         </View>
 
-                                                        {/* Display Sample Questions */}
+                                                        {/* Display Uploaded Sample Question Files */}
                                                         {topicQuestions[topic.id] && topicQuestions[topic.id].length > 0 && (
                                                             <View style={{ padding: 8, backgroundColor: '#F9FAFB', borderRadius: 4, borderWidth: 1, borderColor: '#F3F4F6' }}>
                                                                 <Text style={{ color: '#9CA3AF', fontSize: 10, marginBottom: 4 }}>Sample Questions ({topicQuestions[topic.id].length})</Text>
-                                                                {topicQuestions[topic.id].map((sq, i) => (
-                                                                    <Text key={i} numberOfLines={1} style={{ color: '#4B5563', fontSize: 11, marginBottom: 2 }}>- {sq.text}</Text>
+                                                                {[...new Set(topicQuestions[topic.id].map((sq: any) => sq.source_file).filter(Boolean))].map((fname, i) => (
+                                                                    <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                                                                        <FileText size={12} color="#6B7280" />
+                                                                        <Text numberOfLines={1} style={{ color: '#4B5563', fontSize: 11 }}>{fname as string}</Text>
+                                                                    </View>
                                                                 ))}
                                                             </View>
                                                         )}
@@ -739,49 +728,8 @@ export default function SubjectDetailScreen() {
                 </View>
             </Modal>
 
-            {/* Questions Modal (Centered) */}
-            <Modal isVisible={sqModal} onBackdropPress={() => setSqModal(false)} animationIn="fadeIn" animationOut="fadeOut">
-                <View className="bg-white rounded-2xl mx-4 overflow-hidden shadow-lg">
-                    <LinearGradient colors={['#5eb0e5', '#3a8cc7']} className="px-6 py-4 flex-row justify-between items-center">
-                        <Text className="text-white text-lg font-bold">Add Question</Text>
-                        <TouchableOpacity onPress={() => setSqModal(false)}>
-                            <X size={20} color="white" />
-                        </TouchableOpacity>
-                    </LinearGradient>
 
-                    <View className="p-6">
-                        <Text className="text-gray-500 text-xs mb-1 font-medium">{activeTopicForSq?.title}</Text>
-                        <TextInput
-                            placeholder="Question text..." multiline numberOfLines={3}
-                            value={sqForm.text} onChangeText={(t) => setSqForm(prev => ({ ...prev, text: t }))}
-                            className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4 text-gray-800 text-sm h-24 align-top"
-                        />
 
-                        <View className="flex-row justify-between mb-4 gap-2">
-                            {['MCQ', 'Short', 'Essay'].map(type => (
-                                <TouchableOpacity key={type} onPress={() => setSqForm(prev => ({ ...prev, type }))}
-                                    className={`flex-1 py-2 rounded-lg items-center border ${sqForm.type === type ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-100'}`}>
-                                    <Text className={`font-bold text-xs ${sqForm.type === type ? 'text-blue-600' : 'text-gray-500'}`}>{type}</Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-                        <View className="flex-row justify-between mb-4 gap-2">
-                            {['Easy', 'Medium', 'Hard'].map(diff => (
-                                <TouchableOpacity key={diff} onPress={() => setSqForm(prev => ({ ...prev, difficulty: diff }))}
-                                    className={`flex-1 py-2 rounded-lg items-center border ${sqForm.difficulty === diff ? 'bg-yellow-50 border-yellow-200' : 'bg-gray-50 border-gray-100'}`}>
-                                    <Text className={`font-bold text-xs ${sqForm.difficulty === diff ? 'text-yellow-700' : 'text-gray-500'}`}>{diff}</Text>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-
-                        <TouchableOpacity onPress={handleAddSq}>
-                            <LinearGradient colors={['#5eb0e5', '#3a8cc7']} className="py-3 rounded-lg items-center">
-                                <Text className="text-white font-bold">Add</Text>
-                            </LinearGradient>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            </Modal>
 
             {/* Unit Create Modal (Centered) */}
             <Modal isVisible={unitModal} onBackdropPress={() => setUnitModal(false)} animationIn="fadeIn" animationOut="fadeOut">

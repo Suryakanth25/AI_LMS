@@ -200,7 +200,7 @@ async def _run_generation(job_id: int, rubric_id: int):
                 context_chunks = rag.retrieve(
                     subject_id=subject.id,
                     query=search_query,
-                    n_results=10, # Request more for de-duplication
+                    n_results=15, # Fetch more candidates for MMR + de-duplication
                     unit_id=qp["unit_id"],
                     topic_id=qp["topic_id"],
                     unit_name=qp["unit_name"]
@@ -213,10 +213,10 @@ async def _run_generation(job_id: int, rubric_id: int):
                     if chunk_hash not in used_chunks:
                         fresh_context_chunks.append(chunk)
                         used_chunks.add(chunk_hash)
-                        if len(fresh_context_chunks) >= 5: # Target chunk count
+                        if len(fresh_context_chunks) >= 10: # Target chunk count
                             break
                 
-                context_chunks = fresh_context_chunks if fresh_context_chunks else context_chunks[:3]
+                context_chunks = fresh_context_chunks if fresh_context_chunks else context_chunks[:5]
                 
                 rag_time = time.time() - rag_start
                 rag_context = "\n\n".join(context_chunks) if context_chunks else "No study material context available."

@@ -123,11 +123,13 @@ export const updateTopicSyllabus = (topicId: number, syllabusData: any) =>
         body: JSON.stringify({ syllabus_data: syllabusData })
     });
 
-export const createSampleQuestion = (topicId: number, data: { text: string; question_type: string; difficulty: string }) =>
-    request<any>(`/api/topics/${topicId}/sample-questions`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+export const uploadSampleQuestions = (topicId: number, file: any) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request<any>(`/api/topics/${topicId}/sample-questions`, {
+        method: 'POST', body: formData
     });
+};
 
 export const getSampleQuestions = (topicId: number) =>
     request<any[]>(`/api/topics/${topicId}/sample-questions`);
