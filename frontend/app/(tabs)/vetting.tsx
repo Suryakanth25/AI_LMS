@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator, RefreshControl } from 'react-native';
-import { ChevronDown, ChevronUp, Check, X, Pencil, ArrowLeft, Clock, FileText, BarChart3, CheckCircle, AlertCircle, Layers, History } from 'lucide-react-native';
+import { ChevronDown, ChevronUp, Check, X, Pencil, ArrowLeft, Clock, FileText, BarChart3, CheckCircle, AlertCircle, Layers, History, BookOpen } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -202,6 +202,9 @@ function extractReadableText(raw: any): string {
     return cleaned;
 }
 
+
+
+
 function formatTimeAgo(isoString: string | null): string {
     if (!isoString) return '';
     const diff = Date.now() - new Date(isoString).getTime();
@@ -212,6 +215,27 @@ function formatTimeAgo(isoString: string | null): string {
     if (hrs < 24) return `${hrs}h ago`;
     const days = Math.floor(hrs / 24);
     return `${days}d ago`;
+}
+
+
+// ── Parse OBE Alignment from Chairman Output ──
+function parseObeAlignment(chairmanOutput: any): any | null {
+    if (!chairmanOutput) return null;
+    try {
+        let parsed = chairmanOutput;
+        if (typeof parsed === 'string') {
+            const match = parsed.match(/\{[\s\S]*\}/);
+            if (match) parsed = JSON.parse(match[0]);
+            else return null;
+        }
+        if (typeof parsed === 'object') {
+            if (parsed.obe_alignment) return parsed.obe_alignment;
+            if (parsed.json?.obe_alignment) return parsed.json.obe_alignment;
+        }
+        return null;
+    } catch {
+        return null;
+    }
 }
 
 
@@ -368,7 +392,7 @@ function BatchListView({ onSelectBatch }: { onSelectBatch: (batch: any) => void 
                             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
                                 <View style={{ backgroundColor: '#F3F4F6', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                     <FileText size={12} color="#6B7280" />
-                                    <Text style={{ color: '#4B5563', fontSize: 11, fontWeight: '600' }}>{batch.total_questions} Qs</Text>
+                                    <Text style={{ color: '#4B5563', fontSize: 11, fontWeight: '600' }}>{batch.generated_count || batch.total_questions} Qs</Text>
                                 </View>
                                 <View style={{ backgroundColor: batch.pending_count > 0 ? '#FEF3C7' : '#DCFCE7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                     {batch.pending_count > 0
@@ -381,7 +405,7 @@ function BatchListView({ onSelectBatch }: { onSelectBatch: (batch: any) => void 
                                 </View>
                                 <View style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                     <BarChart3 size={12} color="#2563EB" />
-                                    <Text style={{ color: '#2563EB', fontSize: 11, fontWeight: '600' }}>{batch.vetted_count}/{batch.total_questions}</Text>
+                                    <Text style={{ color: '#2563EB', fontSize: 11, fontWeight: '600' }}>{batch.vetted_count}/{batch.generated_count || batch.total_questions}</Text>
                                 </View>
                             </View>
 
@@ -397,8 +421,27 @@ function BatchListView({ onSelectBatch }: { onSelectBatch: (batch: any) => void 
                                 />
                             </View>
                             <Text style={{ color: '#9CA3AF', fontSize: 10, marginTop: 4, textAlign: 'right' }}>
-                                {batch.progress}% vetted
+                                {batch.vetted_count}/{batch.generated_count || batch.total_questions} vetted
                             </Text>
+
+                            {/* Granular Flags for active batches */}
+                            {batch.progress < 100 && (batch.duplicate_count > 0 || batch.poorly_grounded_count > 0 || batch.error_count > 0) && (
+                                <View style={{
+                                    flexDirection: 'row', alignItems: 'center', gap: 6,
+                                    marginTop: 8, backgroundColor: '#FFFBEB',
+                                    padding: 6, borderRadius: 6, borderWidth: 1, borderColor: '#FEF3C7'
+                                }}>
+                                    <AlertCircle size={12} color="#D97706" />
+                                    <Text style={{ fontSize: 10, color: '#92400E', fontWeight: '500' }}>
+                                        {[
+                                            batch.duplicate_count > 0 ? `${batch.duplicate_count} Duplicates` : '',
+                                            batch.poorly_grounded_count > 0 ? `${batch.poorly_grounded_count} Low-Grounding` : '',
+                                            batch.error_count > 0 ? `${batch.error_count} Errors` : '',
+                                        ].filter(Boolean).join(', ')}
+                                    </Text>
+                                </View>
+                            )}
+
                         </TouchableOpacity>
                     </Animated.View>
                 ))
@@ -414,6 +457,8 @@ function BatchListView({ onSelectBatch }: { onSelectBatch: (batch: any) => void 
 function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void }) {
     const isHistory = batch.progress === 100;
     const [queue, setQueue] = useState<any[]>([]);
+    const [flaggedQueue, setFlaggedQueue] = useState<any[]>([]);
+    const [activeTab, setActiveTab] = useState<'pending' | 'flagged'>('pending');
     const [currentIndex, setCurrentIndex] = useState(0);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -430,30 +475,33 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
     const [coLevels, setCoLevels] = useState<{ [key: number]: string }>({});
     const [bloomsLevel, setBloomsLevel] = useState<string | null>(null);
     const [rejectionReason, setRejectionReason] = useState<string | null>(null);
+    const [editedText, setEditedText] = useState<string>('');
 
     const fetchQueue = async () => {
         try {
-            // For history batches, fetch approved+rejected questions.
-            // For active batches, fetch only pending questions.
             if (isHistory) {
                 const approved = await getVettingQueue('approved', batch.job_id);
                 const rejected = await getVettingQueue('rejected', batch.job_id);
-                const all = [...approved, ...rejected];
-                setQueue(all);
-                setCurrentIndex(0);
-                setAllReviewed(false);
+                setQueue([...approved, ...rejected]);
+                setFlaggedQueue([]);
             } else {
-                const data = await getVettingQueue('pending', batch.job_id);
-                setQueue(data);
-                setCurrentIndex(0);
-                setAllReviewed(data.length === 0);
+                const [pending, duplicates, grounding, errors] = await Promise.all([
+                    getVettingQueue('pending', batch.job_id),
+                    getVettingQueue('duplicate', batch.job_id),
+                    getVettingQueue('poorly_grounded', batch.job_id),
+                    getVettingQueue('error', batch.job_id),
+                ]);
+                setQueue(pending);
+                setFlaggedQueue([...duplicates, ...grounding, ...errors]);
             }
+            setCurrentIndex(0);
         } catch (e) { } finally { setLoading(false); setRefreshing(false); }
     };
 
     useEffect(() => { fetchQueue(); }, [batch.job_id]);
 
-    const current = queue[currentIndex];
+    const activeQueue = activeTab === 'pending' ? queue : flaggedQueue;
+    const current = activeQueue[currentIndex];
 
     useEffect(() => {
         if (batch.subject_id) {
@@ -507,13 +555,12 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
 
     const handleSubmit = async () => {
         if (!action) { Alert.alert('Select Action', 'Choose Approve, Reject, or Edit'); return; }
-        if (selectedCos.length === 0) {
+        if (action !== 'reject' && selectedCos.length === 0) {
             Alert.alert('Validation Error', 'You must map this question to at least one Course Outcome (CO) before submitting.');
             return;
         }
         if (action === 'reject') {
             if (!rejectionReason) { Alert.alert('Validation Error', 'Please select a Rejection Reason.'); return; }
-            if (!feedback || feedback.length < 5) { Alert.alert('Validation Error', 'Please provide constructive feedback for rejection.'); return; }
         }
         setSubmitting(true);
         try {
@@ -525,20 +572,21 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                 blooms_level: bloomsLevel,
                 faculty_feedback: feedback.trim() || undefined,
                 rejection_reason: rejectionReason,
-                edited_text: action === 'edit' ? feedback : undefined,
+                edited_text: action === 'edit' ? editedText : undefined,
                 reviewed_by: "Faculty User"
             });
-            setFeedback(''); setAction(null); setRejectionReason(null);
+            setFeedback(''); setAction(null); setRejectionReason(null); setEditedText('');
             setShowCouncil(false); setDetail(null); setExpandedAgent(null);
             setSelectedCos([]); setCoLevels({});
-            if (currentIndex < queue.length - 1) {
-                const newQueue = [...queue]; newQueue.splice(currentIndex, 1); setQueue(newQueue);
+            if (currentIndex < activeQueue.length - 1) {
+                const newQueue = [...activeQueue]; newQueue.splice(currentIndex, 1);
+                if (activeTab === 'pending') setQueue(newQueue); else setFlaggedQueue(newQueue);
             } else {
-                const newQueue = queue.filter((_, i) => i !== currentIndex);
-                setQueue(newQueue);
-                if (newQueue.length === 0) setAllReviewed(true);
-                else setCurrentIndex(Math.max(0, currentIndex - 1));
+                const newQueue = activeQueue.filter((_, i) => i !== currentIndex);
+                if (activeTab === 'pending') setQueue(newQueue); else setFlaggedQueue(newQueue);
+                setCurrentIndex(Math.max(0, currentIndex - 1));
             }
+
             Alert.alert('Success', 'Question vetted and saved to dataset.');
         } catch (e: any) {
             Alert.alert('Error', e.message || 'Failed to submit');
@@ -588,9 +636,38 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
             <View style={{ backgroundColor: '#EFF6FF', borderRadius: 12, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: '#DBEAFE' }}>
                 <Text style={{ color: '#1E40AF', fontWeight: 'bold', fontSize: 14 }}>{batch.subject_name}</Text>
                 <Text style={{ color: '#3B82F6', fontSize: 11, marginTop: 2 }}>
-                    {batch.rubric_name} {isHistory ? `- ${batch.total_questions} reviewed` : `- ${queue.length} pending of ${batch.total_questions}`}
+                    {batch.rubric_name} {isHistory ? `- ${batch.vetted_count} reviewed` : `- Pending: ${queue.length} / Generated: ${batch.generated_count || batch.total_questions}`}
                 </Text>
             </View>
+
+            {/* Tabs for pending/flagged */}
+            {!isHistory && (
+                <View style={{ flexDirection: 'row', backgroundColor: '#F8FAFC', borderRadius: 10, padding: 4, marginBottom: 16 }}>
+                    <TouchableOpacity
+                        onPress={() => { setActiveTab('pending'); setCurrentIndex(0); }}
+                        style={{
+                            flex: 1, paddingVertical: 8, alignItems: 'center',
+                            backgroundColor: activeTab === 'pending' ? '#FFFFFF' : 'transparent',
+                            borderRadius: 8, elevation: activeTab === 'pending' ? 1 : 0
+                        }}>
+                        <Text style={{ fontSize: 12, fontWeight: 'bold', color: activeTab === 'pending' ? '#1E293B' : '#64748B' }}>
+                            Pending ({queue.length})
+                        </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        onPress={() => { setActiveTab('flagged'); setCurrentIndex(0); }}
+                        style={{
+                            flex: 1, paddingVertical: 8, alignItems: 'center',
+                            backgroundColor: activeTab === 'flagged' ? '#FFFFFF' : 'transparent',
+                            borderRadius: 8, elevation: activeTab === 'flagged' ? 1 : 0
+                        }}>
+                        <Text style={{ fontSize: 12, fontWeight: 'bold', color: activeTab === 'flagged' ? '#1E293B' : '#64748B' }}>
+                            Flagged ({flaggedQueue.length})
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+            )}
+
 
             {/* History read-only indicator */}
             {isHistory && queue.length > 0 && (
@@ -600,16 +677,20 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                 </View>
             )}
 
-            {!isHistory && (allReviewed || queue.length === 0) ? (
+            {!isHistory && (activeQueue.length === 0) ? (
                 <View style={{ alignItems: 'center', justifyContent: 'center', paddingVertical: 80 }}>
                     <CheckCircle size={48} color="#D1D5DB" />
-                    <Text style={{ color: '#4B5563', fontWeight: 'bold', fontSize: 18, marginTop: 16 }}>All Questions Reviewed</Text>
-                    <Text style={{ color: '#9CA3AF', marginTop: 4, fontSize: 13 }}>This batch is fully vetted.</Text>
+                    <Text style={{ color: '#4B5563', fontWeight: 'bold', fontSize: 18, marginTop: 16 }}>
+                        {activeTab === 'pending' ? 'All Questions Reviewed' : 'No Flagged Content'}
+                    </Text>
+                    <Text style={{ color: '#9CA3AF', marginTop: 4, fontSize: 13 }}>
+                        {activeTab === 'pending' ? 'This batch is fully vetted.' : 'No items were flagged as duplicates or poorly grounded.'}
+                    </Text>
                     <TouchableOpacity onPress={onBack} style={{ marginTop: 16, backgroundColor: '#3B82F6', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10 }}>
                         <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 13 }}>Back to Batches</Text>
                     </TouchableOpacity>
                 </View>
-            ) : queue.length === 0 ? (
+            ) : activeQueue.length === 0 ? (
                 <View style={{ alignItems: 'center', justifyContent: 'center', paddingVertical: 80 }}>
                     <AlertCircle size={48} color="#D1D5DB" />
                     <Text style={{ color: '#4B5563', fontWeight: 'bold', fontSize: 16, marginTop: 16 }}>No Questions Found</Text>
@@ -619,9 +700,10 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                 <Animated.View entering={FadeInDown}>
                     {/* Progress bar */}
                     <View className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4">
-                        <View style={{ width: `${((currentIndex + 1) / queue.length) * 100}%` }}
+                        <View style={{ width: `${((currentIndex + 1) / activeQueue.length) * 100}%` }}
                             className="h-full bg-green-500 rounded-full" />
                     </View>
+
 
                     {/* Status badge for history items */}
                     {isHistory && current.status && (
@@ -644,6 +726,29 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                         </View>
                     )}
 
+                    {/* Flagged Status Ribbon */}
+                    {activeTab === 'flagged' && (
+                        <View style={{
+                            flexDirection: 'row', alignItems: 'center', gap: 8,
+                            backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFEDD5',
+                            paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, marginBottom: 16
+                        }}>
+                            <AlertCircle size={18} color="#EA580C" />
+                            <View>
+                                <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#9A3412' }}>
+                                    FLAGGED: {current.status === 'duplicate' ? 'SYSTEM DETECTED DUPLICATE' : 'POTENTIAL LOW GROUNDING'}
+                                </Text>
+                                <Text style={{ fontSize: 11, color: '#C2410C' }}>
+                                    This question was intercepted by validation gates and requires review.
+                                </Text>
+                            </View>
+                        </View>
+                    )}
+
+                    <Text style={{ color: '#9CA3AF', fontSize: 11, marginBottom: 12, textAlign: 'center', fontWeight: 'bold' }}>
+                        {activeTab === 'pending' ? 'Reviewing Pending' : 'Reviewing Flagged'} — {currentIndex + 1} of {activeQueue.length}
+                    </Text>
+
                     {/* Confidence Badge */}
                     {(() => {
                         const c = getConfidenceColor(current.confidence_score || 0);
@@ -660,6 +765,7 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                         );
                     })()}
 
+
                     {/* Badges row */}
                     <View className="flex-row gap-2 mb-4 justify-center">
                         <View className="bg-purple-100 px-3 py-1 rounded-full">
@@ -674,10 +780,25 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                     </View>
 
                     {/* Question Card */}
-                    <View className="bg-white rounded-xl border border-gray-100 p-4 mb-4 shadow-sm">
-                        <Text className="text-gray-800 text-base leading-6 font-medium">
-                            {extractQuestionTextFromAny(display?.text)}
-                        </Text>
+                    <View style={{ backgroundColor: 'white', borderRadius: 12, borderWidth: action === 'edit' ? 2 : 1, borderColor: action === 'edit' ? '#F59E0B' : '#F3F4F6', padding: 16, marginBottom: 16, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4 }}>
+                        {action === 'edit' && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 6 }}>
+                                <Pencil size={12} color='#F59E0B' />
+                                <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#D97706' }}>Editing Mode — Edit the question text below</Text>
+                            </View>
+                        )}
+                        {action === 'edit' ? (
+                            <TextInput
+                                value={editedText}
+                                onChangeText={setEditedText}
+                                multiline
+                                style={{ fontSize: 15, color: '#1F2937', lineHeight: 22, fontWeight: '500', backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 8, padding: 12, minHeight: 80, textAlignVertical: 'top' }}
+                            />
+                        ) : (
+                            <Text className="text-gray-800 text-base leading-6 font-medium">
+                                {extractQuestionTextFromAny(display?.text)}
+                            </Text>
+                        )}
                         {display.explanation ? (
                             <View className="mt-2 bg-blue-50 p-2 rounded-lg">
                                 <Text className="text-blue-800 text-xs italic">{display.explanation}</Text>
@@ -697,6 +818,86 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                             </View>
                         )}
                     </View>
+
+                    {/* OBE Alignment Card — proof of CO/LO/Bloom compliance */}
+                    {(() => {
+                        const obe = parseObeAlignment(detail?.chairman_output || current?.chairman_output);
+                        if (!obe) return null;
+                        return (
+                            <View style={{
+                                backgroundColor: 'white', borderRadius: 12, borderWidth: 1,
+                                borderColor: '#E0E7FF', padding: 16, marginBottom: 16,
+                            }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                                    <BookOpen size={16} color="#4F46E5" />
+                                    <Text style={{ fontWeight: 'bold', color: '#312E81', fontSize: 14 }}>OBE Alignment</Text>
+                                </View>
+
+                                {/* Bloom's Level */}
+                                {obe.blooms_level && (
+                                    <View style={{ marginBottom: 12 }}>
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                                            <View style={{ backgroundColor: '#EEF2FF', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                                                <Text style={{ fontSize: 11, fontWeight: 'bold', color: '#4338CA' }}>
+                                                    Bloom's: {obe.blooms_level.charAt(0).toUpperCase() + obe.blooms_level.slice(1)}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                        {obe.blooms_justification && (
+                                            <Text style={{ fontSize: 11, color: '#4B5563', lineHeight: 16, marginTop: 4 }}>
+                                                {obe.blooms_justification}
+                                            </Text>
+                                        )}
+                                    </View>
+                                )}
+
+                                {/* Course Outcomes */}
+                                {obe.co_codes && obe.co_codes.length > 0 && (
+                                    <View style={{ marginBottom: 12 }}>
+                                        <Text style={{ fontWeight: '600', color: '#1E40AF', fontSize: 12, marginBottom: 4 }}>Course Outcomes</Text>
+                                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+                                            {obe.co_codes.map((co: string, i: number) => (
+                                                <View key={i} style={{ backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                                                    <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1E40AF' }}>{co}</Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                        {obe.co_justification && (
+                                            <Text style={{ fontSize: 11, color: '#4B5563', lineHeight: 16 }}>
+                                                {obe.co_justification}
+                                            </Text>
+                                        )}
+                                    </View>
+                                )}
+
+                                {/* Learning Outcomes */}
+                                {obe.lo_codes && obe.lo_codes.length > 0 && (
+                                    <View>
+                                        <Text style={{ fontWeight: '600', color: '#065F46', fontSize: 12, marginBottom: 4 }}>Learning Outcomes</Text>
+                                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+                                            {obe.lo_codes.map((lo: string, i: number) => (
+                                                <View key={i} style={{ backgroundColor: '#D1FAE5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                                                    <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#065F46' }}>{lo}</Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                        {obe.lo_justification && (
+                                            <Text style={{ fontSize: 11, color: '#4B5563', lineHeight: 16 }}>
+                                                {obe.lo_justification}
+                                            </Text>
+                                        )}
+                                    </View>
+                                )}
+
+                                {/* Fallback when no CO/LO data */}
+                                {(!obe.co_codes || obe.co_codes.length === 0) && (!obe.lo_codes || obe.lo_codes.length === 0) && (
+                                    <Text style={{ fontSize: 11, color: '#9CA3AF', fontStyle: 'italic' }}>
+                                        {obe.co_justification || obe.lo_justification || 'No CO/LO mapping available for this question.'}
+                                    </Text>
+                                )}
+                            </View>
+                        );
+                    })()}
 
                     {/* Council Deliberation */}
                     <TouchableOpacity
@@ -726,11 +927,14 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                             : <ChevronDown size={14} color="#9CA3AF" />}
                                     </TouchableOpacity>
                                     {expandedAgent === agent.key && (
-                                        <View className="bg-white border border-gray-100 p-3 rounded-b-lg">
-                                            <Text className="text-gray-600 text-xs leading-5">
+                                        <ScrollView
+                                            style={{ maxHeight: 500, backgroundColor: 'white', borderWidth: 1, borderColor: '#E5E7EB', borderTopWidth: 0, borderBottomLeftRadius: 8, borderBottomRightRadius: 8, padding: 12 }}
+                                            nestedScrollEnabled={true}
+                                        >
+                                            <Text style={{ fontSize: 11, color: '#374151', lineHeight: 18, fontFamily: 'monospace' }}>
                                                 {extractReadableText(detail[getAgentField(agent.key)])}
                                             </Text>
-                                        </View>
+                                        </ScrollView>
                                     )}
                                 </View>
                             ))}
@@ -740,12 +944,22 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                         onPress={() => setExpandedAgent(expandedAgent === 'rag' ? null : 'rag')}
                                         className="flex-row items-center justify-between bg-gray-50 p-3 rounded-lg"
                                     >
-                                        <Text className="text-gray-700 font-medium text-xs">RAG Context</Text>
+                                        <Text className="text-gray-700 font-medium text-xs">RAG Context (Source Chunks)</Text>
                                         {expandedAgent === 'rag' ? <ChevronUp size={14} color="#9CA3AF" /> : <ChevronDown size={14} color="#9CA3AF" />}
                                     </TouchableOpacity>
                                     {expandedAgent === 'rag' && (
-                                        <ScrollView className="bg-white border border-gray-100 p-3 rounded-b-lg max-h-96">
-                                            <Text className="text-gray-500 text-xs">{detail.rag_context_used}</Text>
+                                        <ScrollView
+                                            style={{ maxHeight: 400, backgroundColor: '#FAFAFA', borderWidth: 1, borderColor: '#E5E7EB', borderTopWidth: 0, borderBottomLeftRadius: 8, borderBottomRightRadius: 8, padding: 12 }}
+                                            nestedScrollEnabled={true}
+                                        >
+                                            {detail.rag_context_used.split(/\n\n+/).map((chunk: string, i: number) => (
+                                                <View key={i} style={{ marginBottom: 12, backgroundColor: 'white', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#E5E7EB' }}>
+                                                    <View style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginBottom: 6 }}>
+                                                        <Text style={{ fontSize: 9, fontWeight: 'bold', color: '#2563EB' }}>CHUNK {i + 1}</Text>
+                                                    </View>
+                                                    <Text style={{ fontSize: 11, color: '#374151', lineHeight: 16 }}>{chunk.trim()}</Text>
+                                                </View>
+                                            ))}
                                         </ScrollView>
                                     )}
                                 </View>
@@ -782,6 +996,11 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                                             </View>
                                                         )}
                                                     </View>
+                                                    {co.description && (
+                                                        <Text style={{ fontSize: 9, color: '#6B7280', marginTop: 2 }} numberOfLines={2}>
+                                                            {co.description}
+                                                        </Text>
+                                                    )}
                                                 </TouchableOpacity>
                                             );
                                         })}
@@ -846,7 +1065,7 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                     <X size={18} color={action === 'reject' ? 'white' : '#EF4444'} />
                                     <Text className={`font-bold text-xs mt-1 ${action === 'reject' ? 'text-white' : 'text-red-500'}`}>Reject</Text>
                                 </TouchableOpacity>
-                                <TouchableOpacity onPress={() => setAction('edit')} className={`flex-1 py-3 rounded-xl items-center border-2 ${action === 'edit' ? 'bg-gray-500 border-gray-500' : 'bg-white border-gray-200'}`}>
+                                <TouchableOpacity onPress={() => { setAction('edit'); setEditedText(extractQuestionTextFromAny(display?.text)); }} className={`flex-1 py-3 rounded-xl items-center border-2 ${action === 'edit' ? 'bg-gray-500 border-gray-500' : 'bg-white border-gray-200'}`}>
                                     <Pencil size={18} color={action === 'edit' ? 'white' : '#6B7280'} />
                                     <Text className={`font-bold text-xs mt-1 ${action === 'edit' ? 'text-white' : 'text-gray-500'}`}>Edit</Text>
                                 </TouchableOpacity>
@@ -877,9 +1096,9 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                             <Text className="text-gray-600 font-bold text-sm">Previous</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                            onPress={() => { if (currentIndex < queue.length - 1) { setCurrentIndex(currentIndex + 1); setShowCouncil(false); setDetail(null); setExpandedAgent(null); } }}
-                            disabled={currentIndex >= queue.length - 1}
-                            className={`flex-1 py-3 rounded-xl items-center border border-gray-200 ${currentIndex >= queue.length - 1 ? 'opacity-30' : 'bg-white'}`}
+                            onPress={() => { if (currentIndex < activeQueue.length - 1) { setCurrentIndex(currentIndex + 1); setShowCouncil(false); setDetail(null); setExpandedAgent(null); } }}
+                            disabled={currentIndex >= activeQueue.length - 1}
+                            className={`flex-1 py-3 rounded-xl items-center border border-gray-200 ${currentIndex >= activeQueue.length - 1 ? 'opacity-30' : 'bg-white'}`}
                         >
                             <Text className="text-gray-600 font-bold text-sm">Next</Text>
                         </TouchableOpacity>

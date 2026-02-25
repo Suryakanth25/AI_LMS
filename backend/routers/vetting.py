@@ -25,17 +25,26 @@ def get_vetting_batches(db: Session = Depends(get_db)):
 
     batches = []
     for job in jobs:
-        total = db.query(func.count(GeneratedQuestion.id)).filter(
-            GeneratedQuestion.job_id == job.id
-        ).scalar() or 0
+        # Get counts breakdown by status
+        status_counts = db.query(
+            GeneratedQuestion.status,
+            func.count(GeneratedQuestion.id)
+        ).filter(GeneratedQuestion.job_id == job.id).group_by(GeneratedQuestion.status).all()
+        
+        counts = {s: c for s, c in status_counts}
+        
+        total = sum(counts.values())
+        pending = counts.get("pending", 0)
+        approved = counts.get("approved", 0)
+        rejected = counts.get("rejected", 0)
+        vetted = approved + rejected
+        
+        flagged_duplicate = counts.get("duplicate", 0)
+        flagged_grounding = counts.get("poorly_grounded", 0)
+        errors = counts.get("error", 0)
 
-        vetted = db.query(func.count(GeneratedQuestion.id)).filter(
-            GeneratedQuestion.job_id == job.id,
-            GeneratedQuestion.status.in_(["approved", "rejected"])
-        ).scalar() or 0
-
-        pending = total - vetted
-        progress = round((vetted / total) * 100) if total > 0 else 0
+        # Progress = vetting progress (how many reviewed), NOT generation progress
+        progress = round((vetted / total * 100)) if total > 0 else 0
 
         batches.append({
             "job_id": job.id,
@@ -43,9 +52,13 @@ def get_vetting_batches(db: Session = Depends(get_db)):
             "subject_id": job.subject_id,
             "rubric_name": job.rubric.name if job.rubric else "Unknown",
             "rubric_id": job.rubric_id,
-            "total_questions": total,
+            "total_questions": job.total_questions_requested, # Use planned total
+            "generated_count": total, # Actual rows in DB
             "vetted_count": vetted,
             "pending_count": pending,
+            "duplicate_count": flagged_duplicate,
+            "poorly_grounded_count": flagged_grounding,
+            "error_count": errors,
             "progress": progress,
             "created_at": job.created_at.isoformat() if job.created_at else None,
             "completed_at": job.completed_at.isoformat() if job.completed_at else None,

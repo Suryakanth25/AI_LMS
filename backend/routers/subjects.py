@@ -327,7 +327,7 @@ async def upload_material(
         file_type=ext,
         file_path=save_path,
         content_text=text,
-        chunk_count=chunk_count,
+        chunk_count=len(chunks),
         chromadb_collection=f"subject_{subject_id}",
     )
     db.add(material)
@@ -348,7 +348,7 @@ async def upload_material(
     return {
         "id": material.id,
         "filename": material.filename,
-        "chunk_count": chunk_count,
+        "chunk_count": len(chunks),
         "file_type": ext,
         "topic_id": topic_id,
     }

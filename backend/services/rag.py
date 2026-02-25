@@ -5,6 +5,11 @@ import os
 import hashlib
 import numpy as np
 
+# Force offline mode — the model is already cached locally.
+# This prevents startup crashes when HuggingFace Hub is unreachable.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 # ─── Embedding Function ───
 # Use sentence-transformers/all-MiniLM-L6-v2 for semantic embeddings
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
@@ -136,17 +141,17 @@ def _mmr_rerank(query_embedding: list[float], doc_embeddings: list[list[float]],
 
         mmr_scores = []
         for idx in remaining:
-            relevance = query_similarities[idx]
+            relevance = float(query_similarities[idx])
 
             # Max similarity to already selected docs
             if selected_indices:
                 selected_vecs = doc_norms[selected_indices]
-                redundancy = max(doc_norms[idx] @ sv for sv in selected_vecs)
+                redundancy = float(max(float(doc_norms[idx] @ sv) for sv in selected_vecs))
             else:
                 redundancy = 0.0
 
             mmr = lambda_mult * relevance - (1 - lambda_mult) * redundancy
-            mmr_scores.append((idx, mmr))
+            mmr_scores.append((idx, float(mmr)))
 
         # Pick the one with highest MMR score
         best_idx = max(mmr_scores, key=lambda x: x[1])[0]
@@ -184,22 +189,28 @@ def retrieve(subject_id: int, query: str, n_results: int = 5, unit_id: int = Non
             include=["documents", "embeddings"],
         )
         
-        raw_docs = results["documents"][0] if results and results["documents"] else []
-        raw_embeddings = results["embeddings"][0] if results and results.get("embeddings") else []
+        # Safe extraction: use 'is not None' and len() checks instead of truthiness
+        # (ChromaDB 1.5.x returns numpy arrays which fail Python truthiness checks)
+        docs_result = results.get("documents") if results else None
+        embs_result = results.get("embeddings") if results else None
+        raw_docs = list(docs_result[0]) if docs_result is not None and len(docs_result) > 0 else []
+        raw_embeddings = list(embs_result[0]) if embs_result is not None and len(embs_result) > 0 else []
 
         # Step 2: Fallback (if scoped search returns nothing)
-        if not raw_docs and (unit_id or topic_id):
+        if len(raw_docs) == 0 and (unit_id or topic_id):
             print(f"RAG: Scoped search for Unit {unit_id}/Topic {topic_id} failed. Falling back to subject-wide search.")
             results = collection.query(
                 query_texts=[query],
                 n_results=fetch_k,
                 include=["documents", "embeddings"],
             )
-            raw_docs = results["documents"][0] if results and results["documents"] else []
-            raw_embeddings = results["embeddings"][0] if results and results.get("embeddings") else []
+            docs_result = results.get("documents") if results else None
+            embs_result = results.get("embeddings") if results else None
+            raw_docs = list(docs_result[0]) if docs_result is not None and len(docs_result) > 0 else []
+            raw_embeddings = list(embs_result[0]) if embs_result is not None and len(embs_result) > 0 else []
             
             # Keyword filtering if unit_name provided
-            if unit_name and raw_docs:
+            if unit_name and len(raw_docs) > 0:
                 keywords = unit_name.lower().split()
                 filtered_pairs = [
                     (doc, emb) for doc, emb in zip(raw_docs, raw_embeddings)
@@ -210,11 +221,11 @@ def retrieve(subject_id: int, query: str, n_results: int = 5, unit_id: int = Non
                     raw_docs = list(raw_docs)
                     raw_embeddings = list(raw_embeddings)
 
-        if not raw_docs:
+        if len(raw_docs) == 0:
             return []
 
         # Step 3: MMR Re-ranking for diversity
-        if raw_embeddings:
+        if len(raw_embeddings) > 0:
             query_embedding = embedding_fn([query])[0]
             return _mmr_rerank(query_embedding, raw_embeddings, raw_docs, k=n_results, lambda_mult=0.7)
         else:
@@ -257,3 +268,17 @@ def delete_material_chunks(subject_id: int, material_id: int):
             collection.delete(ids=ids_to_delete)
     except Exception:
         pass
+
+
+# ─── V2 Delegation APIs (backward compatible) ───
+
+def ingest_enhanced(subject_id: int, material_id: int, text: str, unit_id=None, topic_id=None, source="unknown"):
+    """Delegate to the enhanced rag_indexer for richer chunking + metadata."""
+    from services.rag_indexer import enhanced_ingest
+    return enhanced_ingest(subject_id, material_id, text, unit_id, topic_id, source)
+
+
+def retrieve_context_for_generation(**kwargs):
+    """Delegate to the hybrid retriever pipeline."""
+    from services.rag_retriever import retrieve_context_for_generation as _retrieve
+    return _retrieve(**kwargs)

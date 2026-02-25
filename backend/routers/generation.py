@@ -1,4 +1,7 @@
 import asyncio
+import logging
+import time
+import traceback
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -7,10 +10,14 @@ from database import get_db, SessionLocal
 from models import (
     Rubric, Subject, Unit, Topic, StudyMaterial,
     GenerationJob, GeneratedQuestion, SampleQuestion, Skill,
-    LearningOutcome
+    LearningOutcome, UnitCOMapping, BenchmarkRecord, VettedQuestion
 )
 from schemas import RubricCreate, RubricResponse, GenerateRequest, JobStatusResponse, QuestionResponse
 from services import rag, swarm, benchmark
+from services.rag_retriever import retrieve_context_for_generation
+from services.novelty import check_novelty, validate_grounding, register_question, get_chunk_usage_counts
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -57,9 +64,26 @@ def delete_rubric(rubric_id: int, db: Session = Depends(get_db)):
     rubric = db.query(Rubric).filter(Rubric.id == rubric_id).first()
     if not rubric:
         raise HTTPException(status_code=404, detail="Rubric not found")
+
+    # Cascade: delete dependent generation jobs and their children first
+    jobs = db.query(GenerationJob).filter(GenerationJob.rubric_id == rubric_id).all()
+    for job in jobs:
+        # Get question IDs for this job to clean up vetted records
+        q_ids = [q.id for q in db.query(GeneratedQuestion).filter(GeneratedQuestion.job_id == job.id).all()]
+        if q_ids:
+            db.query(VettedQuestion).filter(VettedQuestion.generated_question_id.in_(q_ids)).delete(synchronize_session=False)
+        db.query(BenchmarkRecord).filter(BenchmarkRecord.job_id == job.id).delete()
+        db.query(GeneratedQuestion).filter(GeneratedQuestion.job_id == job.id).delete()
+        db.delete(job)
+
     db.delete(rubric)
-    db.commit()
-    return {"message": "Rubric deleted"}
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Cannot delete rubric: {str(e)}")
+    return {"message": "Rubric and associated jobs deleted"}
+
 
 
 # --- Generation ---
@@ -105,6 +129,9 @@ async def _run_generation(job_id: int, rubric_id: int):
         job.started_at = datetime.utcnow()
         db.commit()
 
+        # Clear session dedup state for fresh generation
+        swarm.clear_session()
+
         # Fetch active skill (if any)
         skill = (
             db.query(Skill)
@@ -126,8 +153,8 @@ async def _run_generation(job_id: int, rubric_id: int):
 
         # Build question plan: distribute across topics round-robin
         question_plan = []
-        difficulties = ["Easy", "Medium", "Hard"]
-        used_chunks = set() # Task 4: De-duplication tracking
+        difficulties = ["Medium", "Hard", "Hard"]
+        # Chunk usage tracking is now handled by services.novelty module
 
         def distribute(q_type, count, marks_each):
             for i in range(count):
@@ -188,47 +215,53 @@ async def _run_generation(job_id: int, rubric_id: int):
                 syllabus_data["los"] = {lo.code: lo.description for lo in los}
                 syllabus_data["cos"] = mapped_cos
                 
-                # Build Search Query: Use primary LO or Topic Name
-                search_query = qp["topic"]
+                # Build LO/CO text for query builder
+                lo_text = ""
                 if los:
-                    # Cycle through LOs or use first one for query diversity
-                    search_query = los[idx % len(los)].description or qp["topic"]
+                    lo_text = los[idx % len(los)].description or qp["topic"]
+                co_text = " ".join([desc for desc in mapped_cos.values() if desc]) if mapped_cos else ""
                 
-                # RAG retrieval with scoped metadata (Task 2)
-                import time
+                # Determine bloom level from syllabus data
+                bloom_level = ""
+                bloom_dist = syllabus_data.get("bloom_distribution", {})
+                if bloom_dist:
+                    # Pick the bloom level with highest weight
+                    bloom_level = max(bloom_dist, key=bloom_dist.get) if bloom_dist else ""
+
                 rag_start = time.time()
-                context_chunks = rag.retrieve(
+                
+                # Get chunk usage counts for diversity penalty
+                chunk_usage = get_chunk_usage_counts(subject.id, qp["topic_id"])
+                
+                rag_result = retrieve_context_for_generation(
                     subject_id=subject.id,
-                    query=search_query,
-                    n_results=15, # Fetch more candidates for MMR + de-duplication
                     unit_id=qp["unit_id"],
                     topic_id=qp["topic_id"],
-                    unit_name=qp["unit_name"]
+                    topic_name=qp["topic"],
+                    unit_name=qp["unit_name"],
+                    lo_text=lo_text,
+                    co_text=co_text,
+                    bloom_level=bloom_level,
+                    difficulty=qp["difficulty"],
+                    question_type=qp["type"],
+                    n_results=10,
+                    chunk_usage_counts=chunk_usage,
                 )
                 
-                # Task 4: Session De-duplication
-                fresh_context_chunks = []
-                for chunk in context_chunks:
-                    chunk_hash = hash(chunk[:200] + chunk[-200:]) # Simple hash
-                    if chunk_hash not in used_chunks:
-                        fresh_context_chunks.append(chunk)
-                        used_chunks.add(chunk_hash)
-                        if len(fresh_context_chunks) >= 10: # Target chunk count
-                            break
-                
-                context_chunks = fresh_context_chunks if fresh_context_chunks else context_chunks[:5]
+                context_chunks = rag_result["chunks"]
+                used_chunk_ids = rag_result["chunk_ids"]
                 
                 rag_time = time.time() - rag_start
                 rag_context = "\n\n".join(context_chunks) if context_chunks else "No study material context available."
                 
-                print(f"\n[DEBUG] 🔍 RAG Scoped Retrieval for Topic '{qp['topic']}'")
-                print(f"[DEBUG] Query: '{search_query}' | Chunks: {len(context_chunks)}")
+                logger.info(f"RAG Scoped Retrieval for Topic '{qp['topic']}' — {len(rag_result['debug_info'].get('query_variants', []))} variants, {len(context_chunks)} chunks")
+
 
                 benchmark.record_phase(
                     db, job_id, idx, "rag_retrieval", "chromadb", rag_time, True
                 )
 
-                # Generate via Council
+                # Generate via Council (V2: with bloom_level + regeneration loop)
                 result = await swarm.generate_single_question(
                     question_type=qp["type"],
                     topic=qp["topic"],
@@ -238,7 +271,8 @@ async def _run_generation(job_id: int, rubric_id: int):
                     available_models=available_models,
                     syllabus_data=syllabus_data,
                     sample_questions=sample_qs_text,
-                    skill_content=skill_content
+                    skill_content=skill_content,
+                    bloom_level=bloom_level,
                 )
 
                 # Record phase benchmarks
@@ -264,35 +298,27 @@ async def _run_generation(job_id: int, rubric_id: int):
                 # Recursive extraction helper
                 def find_question_payload(d):
                     if not isinstance(d, dict): return None
-                    print(f"[DEBUG] Checking dict keys: {list(d.keys())}") # LOGGING
                     if "question_text" in d: return d
-                    if "question" in d and isinstance(d["question"], str): return d # Handle { "question": "...", "options": ... } logic
+                    if "question" in d and isinstance(d["question"], str): return d
                     
-                    # Known wrappers
                     for k in ["json", "response", "selected_question", "draft", "MCQ", "Short Notes", "Essay", "result", "output"]:
                         if k in d:
-                            print(f"[DEBUG] Descending into wrapper '{k}'") # LOGGING
                             res = find_question_payload(d[k])
                             if res: return res
-                    # Generic recursion (bfs style preference or just simple dfs)
                     for k, v in d.items():
                         if isinstance(v, dict):
-                            print(f"[DEBUG] Descending into generic key '{k}'") # LOGGING
                             res = find_question_payload(v)
                             if res: return res
                     return None
 
-                print(f"\n[DEBUG] Raw Generation Result Type: {type(result)}")
-                print(f"[DEBUG] Raw Generation Result: {result}")
+                logger.debug(f"Raw result type: {type(result)}, q_data type: {type(q_data)}")
 
                 q_payload = None
                 if isinstance(q_data, dict):
                      q_payload = find_question_payload(q_data)
                 
-                if q_payload:
-                    print(f"[DEBUG] Found Payload Keys: {list(q_payload.keys())}")
-                else:
-                    print("[DEBUG] No Payload Found via Recursive Search")
+                if not q_payload:
+                    logger.warning("No question payload found via recursive search")
 
                 question_text = ""
                 options = None
@@ -304,19 +330,15 @@ async def _run_generation(job_id: int, rubric_id: int):
                     # Ensure options is a list if present
                     # Try 'options' OR 'choices'
                     opts = q_payload.get("options") or q_payload.get("choices")
-                    print(f"[DEBUG] Raw Options Data: {opts} (Type: {type(opts)})")
 
+                    import json as json_mod
                     if isinstance(opts, list):
                         options = opts
                     elif isinstance(opts, str):
                         try:
-                            import json
-                            # Try parsing if it looks like a list
                             if opts.strip().startswith("["):
-                                options = json.loads(opts)
+                                options = json_mod.loads(opts)
                             else:
-                                # Handle single string or comma separated? 
-                                # For now, just wrap
                                 options = [opts]
                         except:
                             options = [opts]
@@ -330,16 +352,14 @@ async def _run_generation(job_id: int, rubric_id: int):
 
                 # Final Safety Net: Never save raw JSON as question text
                 if not question_text or question_text.strip().startswith("{"):
-                    # Try to extract from string if it looks like JSON
                     if isinstance(question_text, str) and "question_text" in question_text:
-                        pass # It's a stringified JSON potentially?
+                        pass
                     else:
-                        print(f"[ERROR] Final text validation failed. content: {question_text[:50]}...")
+                        logger.warning(f"Final text validation failed: {question_text[:50] if question_text else 'empty'}")
                         question_text = "[EXTRACTION FAILED] Could not parse question text."
 
                 # --- Fallback: Extract options from text if missing ---
                 if not options and "MCQ" in result.get("question_type", "MCQ"):
-                    print("[DEBUG] Options missing for MCQ. Attempting regex extraction from text.")
                     import re
                     # Pattern: A) or A. or (A) ... followed by text, until next pattern or end
                     # This is a naive splitter but often effective for formatted questions
@@ -352,7 +372,7 @@ async def _run_generation(job_id: int, rubric_id: int):
                     
                     if matches:
                         options = [m.strip() for m in matches]
-                        print(f"[DEBUG] Extracted options from text: {options}")
+                        logger.debug(f"Extracted options from text: {len(options)} found")
 
                 # ------------------------------------------------------
 
@@ -381,6 +401,40 @@ async def _run_generation(job_id: int, rubric_id: int):
                     status="pending",
                 )
                 db.add(gen_q)
+                db.flush()  # Get gen_q.id for novelty registration
+
+                # ─── Post-Generation: Novelty & Grounding ───
+                try:
+                    # Check novelty (question dedup)
+                    novelty_result = check_novelty(
+                        db, subject.id, question_text,
+                        topic_id=qp["topic_id"],
+                        similarity_threshold=0.85,
+                    )
+                    if not novelty_result["is_novel"]:
+                        print(f"[Novelty] ⚠️ Duplicate detected (sim={novelty_result['max_similarity']:.2f})")
+                        gen_q.status = "duplicate"
+                    
+                    # Validate grounding
+                    grounding_result = validate_grounding(
+                        subject.id, question_text,
+                        topic_id=qp["topic_id"],
+                    )
+                    if not grounding_result["is_grounded"]:
+                        print(f"[Grounding] ⚠️ Poorly grounded (score={grounding_result['grounding_score']:.2f})")
+                        if gen_q.status == "pending":
+                            gen_q.status = "poorly_grounded"
+                    
+                    # Register question + chunk usage for future diversity
+                    register_question(
+                        subject_id=subject.id,
+                        topic_id=qp["topic_id"],
+                        question_id=gen_q.id,
+                        question_text=question_text,
+                        chunk_ids=used_chunk_ids,
+                    )
+                except Exception as novelty_err:
+                    print(f"[Novelty] Warning: {novelty_err}")
 
                 total_time += gen_time
                 total_confidence += confidence
@@ -392,10 +446,31 @@ async def _run_generation(job_id: int, rubric_id: int):
                 db.commit()
 
             except Exception as e:
+                traceback.print_exc()
                 benchmark.record_phase(
                     db, job_id, idx, "error", "none", 0, False, str(e)
                 )
-                continue
+                # ALWAYS create a row so the slot isn't lost
+                try:
+                    error_q = GeneratedQuestion(
+                        job_id=job_id,
+                        topic_id=qp["topic_id"],
+                        text=f"[GENERATION ERROR] {str(e)[:200]}",
+                        question_type=qp["type"],
+                        marks=qp["marks"],
+                        difficulty=qp["difficulty"],
+                        confidence_score=0.0,
+                        status="error",
+                        generation_time_seconds=0,
+                    )
+                    db.add(error_q)
+                    generated_count += 1
+                    job.progress = int((generated_count / total) * 100)
+                    job.total_questions_generated = generated_count
+                    db.commit()
+                except Exception:
+                    pass
+
 
         # Finalize job
         job.status = "completed"
