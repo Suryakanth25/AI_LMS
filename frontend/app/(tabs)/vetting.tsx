@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator, RefreshControl } from 'react-native';
-import { ChevronDown, ChevronUp, Check, X, Pencil, ArrowLeft, Clock, FileText, BarChart3, CheckCircle, AlertCircle, Layers, History, BookOpen } from 'lucide-react-native';
+import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator, RefreshControl, Platform } from 'react-native';
+import { ChevronDown, ChevronUp, Check, X, Pencil, ArrowLeft, Clock, FileText, BarChart3, CheckCircle, AlertCircle, Layers, History, BookOpen, Download } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppBackground } from '@/components/ui/AppBackground';
-import { getVettingBatches, getVettingQueue, getQuestionDetail, submitVetting, getSubjectDetail } from '@/services/api';
+import { getVettingBatches, getVettingQueue, getQuestionDetail, submitVetting, getSubjectDetail, getBatchExport } from '@/services/api';
 import { useFocusEffect } from '@react-navigation/native';
 
 // ── Utility: strip ALL markdown/special chars and return plain readable text ──
@@ -270,6 +270,58 @@ function BatchListView({ onSelectBatch }: { onSelectBatch: (batch: any) => void 
 
     const displayBatches = activeTab === 'active' ? activeBatches : historyBatches;
 
+    const handleDownload = async (batch: any, format: 'csv' | 'json') => {
+        try {
+            const data = await getBatchExport(batch.job_id);
+            if (!data || data.length === 0) {
+                Alert.alert("Empty Batch", "No questions to export");
+                return;
+            }
+
+            if (format === 'json') {
+                const jsonString = JSON.stringify(data, null, 2);
+                if (Platform.OS === 'web') {
+                    const blob = new Blob([jsonString], { type: 'application/json' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.setAttribute('href', url);
+                    a.setAttribute('download', `Batch_${batch.job_id}_${(batch.subject_name || 'Subject').replace(/\s+/g, '_')}.json`);
+                    a.click();
+                } else {
+                    Alert.alert("Notice", "Download JSON is currently only supported on Web version.");
+                }
+            } else {
+                const headers = ["question_text", "options", "correct_answer"];
+                const csvRows = [];
+                csvRows.push(headers.join(","));
+
+                for (let row of data) {
+                    const values = headers.map(h => {
+                        let val = row[h] === null || row[h] === undefined ? '' : row[h];
+                        if (typeof val === 'object') val = JSON.stringify(val);
+                        val = String(val).replace(/"/g, '""');
+                        return `"${val}"`;
+                    });
+                    csvRows.push(values.join(","));
+                }
+
+                const csvString = csvRows.join("\n");
+                if (Platform.OS === 'web') {
+                    const blob = new Blob([csvString], { type: 'text/csv' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.setAttribute('href', url);
+                    a.setAttribute('download', `Batch_${batch.job_id}_${(batch.subject_name || 'Subject').replace(/\s+/g, '_')}.csv`);
+                    a.click();
+                } else {
+                    Alert.alert("Notice", "Download CSV is currently only supported on Web version.");
+                }
+            }
+        } catch (e) {
+            Alert.alert("Export Error", "Export failed");
+        }
+    };
+
     return (
         <ScrollView
             style={{ flex: 1, paddingHorizontal: 16, paddingTop: 16 }}
@@ -441,6 +493,24 @@ function BatchListView({ onSelectBatch }: { onSelectBatch: (batch: any) => void 
                                     </Text>
                                 </View>
                             )}
+
+                            {/* Export Buttons */}
+                            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                                <TouchableOpacity
+                                    onPress={(e) => { e.stopPropagation(); handleDownload(batch, 'csv'); }}
+                                    style={{ flex: 1, backgroundColor: '#EFF6FF', paddingVertical: 8, borderRadius: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, borderWidth: 1, borderColor: '#BFDBFE' }}
+                                >
+                                    <Download size={12} color="#2563EB" />
+                                    <Text style={{ color: '#2563EB', fontSize: 11, fontWeight: 'bold' }}>Export CSV</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    onPress={(e) => { e.stopPropagation(); handleDownload(batch, 'json'); }}
+                                    style={{ flex: 1, backgroundColor: '#F3E8FF', paddingVertical: 8, borderRadius: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, borderWidth: 1, borderColor: '#D8B4FE' }}
+                                >
+                                    <FileText size={12} color="#9333EA" />
+                                    <Text style={{ color: '#9333EA', fontSize: 11, fontWeight: 'bold' }}>Export JSON</Text>
+                                </TouchableOpacity>
+                            </View>
 
                         </TouchableOpacity>
                     </Animated.View>
@@ -806,11 +876,13 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                         ) : null}
                         {display.options && Array.isArray(display.options) && (
                             <View className="mt-3 gap-2">
-                                {display.options.map((opt: string, i: number) => {
-                                    const isCorrect = display.answer && opt.startsWith(display.answer);
+                                {display.options.map((opt: any, i: number) => {
+                                    const optStr = String(opt);
+                                    const answerStr = String(display.answer || '');
+                                    const isCorrect = display.answer && typeof optStr === 'string' && optStr.startsWith(answerStr);
                                     return (
                                         <View key={i} className={`px-3 py-2 rounded-lg border ${isCorrect ? 'bg-green-50 border-green-300' : 'bg-gray-50 border-gray-200'}`}>
-                                            <Text className={`text-sm ${isCorrect ? 'text-green-700 font-bold' : 'text-gray-700'}`}>{opt}</Text>
+                                            <Text className={`text-sm ${isCorrect ? 'text-green-700 font-bold' : 'text-gray-700'}`}>{optStr}</Text>
                                         </View>
                                     );
                                 })}
@@ -856,11 +928,14 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                     <View style={{ marginBottom: 12 }}>
                                         <Text style={{ fontWeight: '600', color: '#1E40AF', fontSize: 12, marginBottom: 4 }}>Course Outcomes</Text>
                                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
-                                            {obe.co_codes.map((co: string, i: number) => (
-                                                <View key={i} style={{ backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
-                                                    <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1E40AF' }}>{co}</Text>
-                                                </View>
-                                            ))}
+                                            {obe.co_codes.map((co: any, i: number) => {
+                                                const coText = typeof co === 'object' ? Object.keys(co)[0] : String(co);
+                                                return (
+                                                    <View key={i} style={{ backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                                                        <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1E40AF' }}>{coText}</Text>
+                                                    </View>
+                                                )
+                                            })}
                                         </View>
                                         {obe.co_justification && (
                                             <Text style={{ fontSize: 11, color: '#4B5563', lineHeight: 16 }}>
@@ -875,11 +950,14 @@ function QuestionReviewView({ batch, onBack }: { batch: any; onBack: () => void 
                                     <View>
                                         <Text style={{ fontWeight: '600', color: '#065F46', fontSize: 12, marginBottom: 4 }}>Learning Outcomes</Text>
                                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
-                                            {obe.lo_codes.map((lo: string, i: number) => (
-                                                <View key={i} style={{ backgroundColor: '#D1FAE5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
-                                                    <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#065F46' }}>{lo}</Text>
-                                                </View>
-                                            ))}
+                                            {obe.lo_codes.map((lo: any, i: number) => {
+                                                const loText = typeof lo === 'object' ? Object.keys(lo)[0] : String(lo);
+                                                return (
+                                                    <View key={i} style={{ backgroundColor: '#D1FAE5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                                                        <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#065F46' }}>{loText}</Text>
+                                                    </View>
+                                                )
+                                            })}
                                         </View>
                                         {obe.lo_justification && (
                                             <Text style={{ fontSize: 11, color: '#4B5563', lineHeight: 16 }}>

@@ -10,6 +10,9 @@ from collections import defaultdict
 from typing import Optional
 
 from services.rag import embedding_fn, _get_collection
+from services.redis_cache import RedisCache
+
+_redis = RedisCache()
 
 
 # ─── In-Memory Caches ───
@@ -92,12 +95,24 @@ def check_novelty(
         "similar_question_text": str or None,
     }
     """
-    # Ensure cache is loaded
-    load_existing_questions(db, subject_id, topic_id)
-    
     key = _cache_key(subject_id, topic_id)
-    existing = _question_embeddings_cache.get(key, [])
     
+    # L1 Cache check
+    existing = _question_embeddings_cache.get(key)
+    
+    # L2 Redis check
+    if existing is None:
+        redis_embs = _redis.get_question_embeddings(subject_id, topic_id)
+        if redis_embs:
+            existing = [{"embedding": e, "question_id": -1, "text": "Cached in Redis"} for e in redis_embs]
+            _question_embeddings_cache[key] = existing
+            print(f"[Novelty] Loaded {len(existing)} embeddings from Redis for {key}")
+            
+    # L3 DB Fallback
+    if existing is None:
+        load_existing_questions(db, subject_id, topic_id)
+        existing = _question_embeddings_cache.get(key, [])
+        
     if not existing:
         return {
             "is_novel": True,
@@ -156,6 +171,9 @@ def register_question(
     
     try:
         emb = embedding_fn([question_text])[0]
+        
+        _redis.add_question_embedding(subject_id, topic_id, question_id, emb)
+        
         _question_embeddings_cache[key].append({
             "embedding": emb,
             "question_id": question_id,

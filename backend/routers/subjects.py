@@ -13,7 +13,7 @@ from schemas import (
     TopicCreate, TopicResponse,
     MaterialResponse,
 )
-from services import rag
+from services import rag, rag_indexer
 
 router = APIRouter(prefix="/api", tags=["subjects"])
 
@@ -301,21 +301,19 @@ async def upload_material(
     with open(save_path, "wb") as f:
         f.write(content)
 
-    # Extract text
-    text = rag.extract_text(save_path, ext)
+    # Extract text with page mappings
+    text, page_map = rag_indexer.extract_text_with_pages(save_path, ext)
 
-    # Chunk
-    chunks = rag.chunk_text(text)
-
-    # Ingest into ChromaDB with metadata (Task 1)
-    # Note: rag.ingest now handles string casting internally
-    rag.ingest(
+    # Ingest into ChromaDB with metadata (Enhanced)
+    # We use a temporary material_id of 0
+    collection_name, chunk_count = rag_indexer.enhanced_ingest(
         subject_id=subject_id,
         material_id=0, # temp
-        chunks=chunks,
+        text=text,
         unit_id=unit_id,
         topic_id=topic_id,
-        source=filename
+        source=filename,
+        page_map=page_map,
     )
 
     # Save DB record
@@ -327,8 +325,8 @@ async def upload_material(
         file_type=ext,
         file_path=save_path,
         content_text=text,
-        chunk_count=len(chunks),
-        chromadb_collection=f"subject_{subject_id}",
+        chunk_count=chunk_count,
+        chromadb_collection=collection_name,
     )
     db.add(material)
     db.commit()
@@ -336,19 +334,23 @@ async def upload_material(
 
     # Re-ingest with correct material_id
     rag.delete_material_chunks(subject_id, material.id)
-    rag.ingest(
+    rag_indexer.enhanced_ingest(
         subject_id=subject_id,
         material_id=material.id,
-        chunks=chunks,
+        text=text,
         unit_id=unit_id,
         topic_id=topic_id,
-        source=filename
+        source=filename,
+        page_map=page_map,
     )
+
+    from services.redis_cache import RedisCache
+    RedisCache().invalidate_retrieval_cache(subject_id)
 
     return {
         "id": material.id,
         "filename": material.filename,
-        "chunk_count": len(chunks),
+        "chunk_count": chunk_count,
         "file_type": ext,
         "topic_id": topic_id,
     }
@@ -381,7 +383,62 @@ def delete_material(material_id: int, db: Session = Depends(get_db)):
         
     db.delete(material)
     db.commit()
+    
+    from services.redis_cache import RedisCache
+    RedisCache().invalidate_retrieval_cache(material.subject_id)
+    
     return {"message": "Material deleted successfully"}
+
+
+@router.post("/subjects/{subject_id}/reindex")
+def reindex_subject_materials(subject_id: int, db: Session = Depends(get_db)):
+    """Re-processes all materials for a subject using enhanced ingestion."""
+    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+        
+    materials = db.query(StudyMaterial).filter(StudyMaterial.subject_id == subject_id).all()
+    
+    # Clean the entire collection for this subject
+    collection_name = f"subject_{subject_id}"
+    try:
+        rag.client.delete_collection(name=collection_name)
+    except:
+        pass # Collection might not exist yet
+        
+    total_chunks = 0
+    for material in materials:
+        if not material.file_path or not os.path.exists(material.file_path):
+            continue
+            
+        ext = material.file_type
+        # Extract text with page mappings
+        try:
+            text, page_map = rag_indexer.extract_text_with_pages(material.file_path, ext)
+            
+            # Re-ingest
+            _, chunk_count = rag_indexer.enhanced_ingest(
+                subject_id=subject_id,
+                material_id=material.id,
+                text=text,
+                unit_id=material.unit_id,
+                topic_id=material.topic_id,
+                source=material.filename,
+                page_map=page_map,
+            )
+            
+            # Update DB
+            material.chunk_count = chunk_count
+            total_chunks += chunk_count
+        except Exception as e:
+            print(f"Error re-indexing material {material.id}: {e}")
+            
+    db.commit()
+    
+    from services.redis_cache import RedisCache
+    RedisCache().invalidate_retrieval_cache(subject_id)
+    
+    return {"message": f"Successfully re-indexed {total_chunks} chunks across {len(materials)} materials."}
 
 
 # --- Topic Syllabus & Sample Questions ---

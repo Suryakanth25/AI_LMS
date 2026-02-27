@@ -16,8 +16,11 @@ from schemas import RubricCreate, RubricResponse, GenerateRequest, JobStatusResp
 from services import rag, swarm, benchmark
 from services.rag_retriever import retrieve_context_for_generation
 from services.novelty import check_novelty, validate_grounding, register_question, get_chunk_usage_counts
+from services.redis_cache import RedisCache
 
 logger = logging.getLogger(__name__)
+
+_redis = RedisCache()
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -88,7 +91,7 @@ def delete_rubric(rubric_id: int, db: Session = Depends(get_db)):
 
 # --- Generation ---
 
-async def _run_generation(job_id: int, rubric_id: int):
+async def _run_generation(job_id: int, rubric_id: int, difficulty: str = "Medium"):
     """Async generation logic — runs all council phases for each question."""
     db = SessionLocal()
     try:
@@ -98,6 +101,14 @@ async def _run_generation(job_id: int, rubric_id: int):
 
         if not job or not rubric or not subject:
             return
+            
+        if not _redis.acquire_generation_lock(subject.id, job_id):
+            job.status = "failed"
+            job.error_message = "Another generation is in progress for this subject"
+            db.commit()
+            return
+            
+        job_locked = True
 
         # Get all topics for this subject
         topics = (
@@ -119,11 +130,7 @@ async def _run_generation(job_id: int, rubric_id: int):
             .filter(StudyMaterial.subject_id == subject.id)
             .count()
         )
-        if material_count == 0:
-            job.status = "failed"
-            job.error_message = "Upload study materials first"
-            db.commit()
-            return
+        # We allow material_count == 0 because it can fallback to Sample Questions
 
         job.status = "running"
         job.started_at = datetime.utcnow()
@@ -153,14 +160,13 @@ async def _run_generation(job_id: int, rubric_id: int):
 
         # Build question plan: distribute across topics round-robin
         question_plan = []
-        difficulties = ["Medium", "Hard", "Hard"]
         # Chunk usage tracking is now handled by services.novelty module
 
         def distribute(q_type, count, marks_each):
             for i in range(count):
                 topic = topics[i % len(topics)]
                 unit = topic.unit
-                diff = difficulties[i % len(difficulties)]
+                diff = difficulty
                 question_plan.append({
                     "type": q_type,
                     "topic": topic.title,
@@ -244,7 +250,7 @@ async def _run_generation(job_id: int, rubric_id: int):
                     bloom_level=bloom_level,
                     difficulty=qp["difficulty"],
                     question_type=qp["type"],
-                    n_results=10,
+                    n_results=6,
                     chunk_usage_counts=chunk_usage,
                 )
                 
@@ -252,7 +258,39 @@ async def _run_generation(job_id: int, rubric_id: int):
                 used_chunk_ids = rag_result["chunk_ids"]
                 
                 rag_time = time.time() - rag_start
-                rag_context = "\n\n".join(context_chunks) if context_chunks else "No study material context available."
+                
+                # Build labeled context with section info
+                labeled_chunks = []
+                for i, (chunk, chunk_id) in enumerate(zip(context_chunks, used_chunk_ids)):
+                    # Extract page info from the retrieval result's debug_info or metadata
+                    page_info = ""
+                    section_info = ""
+                    
+                    # If rag_result contains metadata
+                    chunk_meta = rag_result.get("chunk_metadata", {}).get(chunk_id, {})
+                    if chunk_meta:
+                        page_start = chunk_meta.get("page_start", "?")
+                        page_end = chunk_meta.get("page_end", "?")
+                        section = chunk_meta.get("section_heading", "")
+                        if page_start == page_end or page_end in ("?", "0", 0):
+                            page_info = f"(Page {page_start})"
+                        else:
+                            page_info = f"(Pages {page_start}-{page_end})"
+                        if section:
+                            section_info = f" [{section}]"
+                    
+                    labeled_chunks.append(f"[Source {i+1}] {page_info}{section_info}\n{chunk}")
+                
+                rag_context = "\n\n---\n\n".join(labeled_chunks) if labeled_chunks else ""
+                
+                # If no study material context, but sample questions exist, use them as synthetic chunks
+                if not rag_context and sample_qs:
+                    synthetic_chunks = []
+                    for i, sq in enumerate(sample_qs):
+                        synthetic_chunks.append(f"[Source {i+1}] (Sample Question Reference)\n{sq.text}")
+                    rag_context = "\n\n---\n\n".join(synthetic_chunks)
+                elif not rag_context:
+                    rag_context = "No study material context available."
                 
                 logger.info(f"RAG Scoped Retrieval for Topic '{qp['topic']}' — {len(rag_result['debug_info'].get('query_variants', []))} variants, {len(context_chunks)} chunks")
 
@@ -374,6 +412,34 @@ async def _run_generation(job_id: int, rubric_id: int):
                         options = [m.strip() for m in matches]
                         logger.debug(f"Extracted options from text: {len(options)} found")
 
+                # --- Safety net: Ensure MCQ always has exactly 4 options ---
+                if options is not None and "MCQ" in result.get("question_type", "MCQ"):
+                    if len(options) > 4:
+                        # Keep correct_answer + first 3 others
+                        if correct_answer and correct_answer in options:
+                            others = [o for o in options if o != correct_answer][:3]
+                            options = others + [correct_answer]
+                        else:
+                            options = options[:4]
+                        logger.warning(f"Trimmed MCQ options to 4")
+                    elif 0 < len(options) < 4:
+                        placeholders = ["None of the above", "All of the above",
+                                        "Not applicable", "Cannot be determined"]
+                        while len(options) < 4:
+                            added = False
+                            for ph in placeholders:
+                                if ph not in options and ph != correct_answer:
+                                    options.append(ph)
+                                    added = True
+                                    break
+                            if not added:
+                                options.append(f"Option {len(options) + 1}")
+                            if len(options) >= 4:
+                                break
+                        if correct_answer and correct_answer not in options:
+                            options[-1] = correct_answer
+                        logger.warning(f"Padded MCQ options to 4")
+
                 # ------------------------------------------------------
 
 
@@ -409,7 +475,7 @@ async def _run_generation(job_id: int, rubric_id: int):
                     novelty_result = check_novelty(
                         db, subject.id, question_text,
                         topic_id=qp["topic_id"],
-                        similarity_threshold=0.85,
+                        similarity_threshold=0.95,
                     )
                     if not novelty_result["is_novel"]:
                         print(f"[Novelty] ⚠️ Duplicate detected (sim={novelty_result['max_similarity']:.2f})")
@@ -489,15 +555,17 @@ async def _run_generation(job_id: int, rubric_id: int):
                 job.status = "failed"
                 job.error_message = str(e)
                 db.commit()
-        except Exception:
+        except:
             pass
     finally:
+        if 'subject' in locals() and subject:
+            _redis.release_generation_lock(subject.id)
         db.close()
 
 
-def _run_generation_sync(job_id: int, rubric_id: int):
+def _run_generation_sync(job_id: int, rubric_id: int, difficulty: str = "Medium"):
     """Sync wrapper for BackgroundTasks."""
-    asyncio.run(_run_generation(job_id, rubric_id))
+    asyncio.run(_run_generation(job_id, rubric_id, difficulty))
 
 
 @router.post("/generate/")
@@ -514,14 +582,8 @@ def start_generation(
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
 
-    # Check materials availability at start
-    material_count = (
-        db.query(StudyMaterial)
-        .filter(StudyMaterial.subject_id == subject.id)
-        .count()
-    )
-    if material_count == 0:
-        raise HTTPException(status_code=400, detail="Subject has no study materials. Upload materials first.")
+    # We skip strict material_count checks here since the generator can fallback to Sample Questions
+    # if no study materials are found.
 
     total_questions = rubric.mcq_count + rubric.short_count + rubric.essay_count
 
@@ -536,7 +598,7 @@ def start_generation(
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(_run_generation_sync, job.id, rubric.id)
+    background_tasks.add_task(_run_generation_sync, job.id, rubric.id, data.difficulty)
 
     return {
         "job_id": job.id,

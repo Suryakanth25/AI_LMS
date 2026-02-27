@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Plus, Trash, FileText, Database } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -65,6 +65,13 @@ export default function SubjectsScreen() {
     };
 
     const handleDelete = (id: number, name: string) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm(`Delete "${name}" and all its data?`)) {
+                deleteSubject(id).then(fetchSubjects).catch(() => Alert.alert('Error', 'Failed to delete'));
+            }
+            return;
+        }
+
         Alert.alert('Delete Subject', `Delete "${name}" and all its data?`, [
             { text: 'Cancel', style: 'cancel' },
             {

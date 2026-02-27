@@ -66,6 +66,28 @@ def get_vetting_batches(db: Session = Depends(get_db)):
 
     return batches
 
+@router.get("/batches/{job_id}/export")
+def export_batch_questions(job_id: int, db: Session = Depends(get_db)):
+    """
+    Export all questions from a specific batch, including all statuses.
+    Returns a list of dictionaries.
+    """
+    job = db.query(GenerationJob).filter(GenerationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Batch/Job not found")
+        
+    questions = db.query(GeneratedQuestion).filter(GeneratedQuestion.job_id == job_id).all()
+    
+    export_data = []
+    for q in questions:
+        export_data.append({
+            "question_text": q.text,
+            "options": q.options,
+            "correct_answer": q.correct_answer
+        })
+        
+    return export_data
+
 @router.get("/queue")
 def get_vetting_queue(
     status: str = "pending",

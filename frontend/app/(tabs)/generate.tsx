@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Alert, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Sparkles, Trash, Check, Plus, Clock, Target, FileText } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -24,6 +24,7 @@ export default function GenerateScreen() {
     const [rubricName, setRubricName] = useState('');
     // Subject no longer needed for Rubric creation
     const [selectedSubject, setSelectedSubject] = useState<any>(null);
+    const [difficulty, setDifficulty] = useState('Medium');
     const [examType, setExamType] = useState('midterm');
     const [duration, setDuration] = useState('60');
     const [mcqCount, setMcqCount] = useState(5);
@@ -95,12 +96,9 @@ export default function GenerateScreen() {
             Alert.alert('Error', 'Please select a subject first');
             return;
         }
-        if ((selectedSubject.material_count || 0) === 0) {
-            Alert.alert('No Materials', 'Upload study materials for the selected subject first');
-            return;
-        }
+        // Removed material_count check here, allowing fallback to Sample Questions
         try {
-            const result = await startGeneration(selectedRubric.id, selectedSubject.id);
+            const result = await startGeneration(selectedRubric.id, selectedSubject.id, difficulty);
             setJobId(result.job_id);
             setJobData({ status: 'pending', progress: 0, total_questions_requested: result.total_questions_requested });
             setElapsed(0);
@@ -141,6 +139,13 @@ export default function GenerateScreen() {
     };
 
     const handleDeleteRubric = (id: number) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm('Remove this rubric?')) {
+                deleteRubric(id).then(fetchData).catch(() => Alert.alert('Error', 'Failed to delete'));
+            }
+            return;
+        }
+
         Alert.alert('Delete Rubric', 'Remove this rubric?', [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Delete', style: 'destructive', onPress: async () => { await deleteRubric(id); fetchData(); } },
@@ -238,6 +243,24 @@ export default function GenerateScreen() {
                                 </TouchableOpacity>
                             </Animated.View>
                         ))
+                    )}
+
+                    {/* Difficulty Selector */}
+                    {selectedRubric && selectedSubject && ollamaStatus?.available && (
+                        <View className="mt-2 mb-2">
+                            <Text className="text-gray-600 font-bold text-xs uppercase mb-2 ml-1">Select Difficulty Preference</Text>
+                            <View className="flex-row gap-2">
+                                {['Easy', 'Medium', 'Hard'].map(level => (
+                                    <TouchableOpacity
+                                        key={level}
+                                        onPress={() => setDifficulty(level)}
+                                        className={`flex-1 py-3 rounded-xl border items-center shadow-sm ${difficulty === level ? 'bg-indigo-500 border-indigo-500' : 'bg-white border-gray-200'}`}
+                                    >
+                                        <Text className={`font-bold text-sm ${difficulty === level ? 'text-white' : 'text-gray-700'}`}>{level}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </View>
+                        </View>
                     )}
 
                     {/* Generate Button */}

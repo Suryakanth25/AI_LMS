@@ -191,6 +191,7 @@ class RubricResponse(BaseModel):
 class GenerateRequest(BaseModel):
     rubric_id: int
     subject_id: int
+    difficulty: str = "Medium"
 
 class JobStatusResponse(BaseModel):
     id: int

@@ -212,10 +212,10 @@ export const deleteRubric = (id: number) =>
     request<void>(`/api/rubrics/${id}`, { method: 'DELETE' });
 
 // ─── Generation ───
-export const startGeneration = (rubricId: number, subjectId: number) =>
+export const startGeneration = (rubricId: number, subjectId: number, difficulty: string = "Medium") =>
     request<any>('/api/generate/', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rubric_id: rubricId, subject_id: subjectId })
+        body: JSON.stringify({ rubric_id: rubricId, subject_id: subjectId, difficulty })
     });
 
 export const pollJob = (jobId: number) => request<any>(`/api/generate/job/${jobId}`);
@@ -227,6 +227,9 @@ export const getOllamaStatus = () => request<any>('/api/generate/ollama-status')
 // ─── Vetting ───
 export const getVettingBatches = () =>
     request<any[]>('/api/vetting/batches');
+
+export const getBatchExport = (jobId: number) =>
+    request<any[]>(`/api/vetting/batches/${jobId}/export`);
 
 export const getVettingQueue = (status: string = 'pending', jobId?: number) => {
     let url = `/api/vetting/queue?status=${status}`;

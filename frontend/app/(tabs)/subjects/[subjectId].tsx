@@ -105,6 +105,12 @@ export default function SubjectDetailScreen() {
     const countMaterials = () => materials ? materials.length : 0;
 
     const handleDeleteUnit = (id: number) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm('Delete Unit? Cannot undo.')) {
+                deleteUnit(id).then(fetchAll).catch(console.error);
+            }
+            return;
+        }
         Alert.alert('Delete Unit', 'Cannot undo.', [
             { text: 'Cancel' },
             {
@@ -117,6 +123,12 @@ export default function SubjectDetailScreen() {
     };
 
     const handleDeleteTopic = (id: number) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm('Delete Topic? Cannot undo.')) {
+                deleteTopic(id).then(fetchAll).catch(console.error);
+            }
+            return;
+        }
         Alert.alert('Delete Topic', 'Cannot undo.', [
             { text: 'Cancel' },
             {
@@ -192,6 +204,12 @@ export default function SubjectDetailScreen() {
     };
 
     const handleDeleteMaterial = (matId: number, name: string) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm(`Remove material "${name}"?`)) {
+                deleteMaterial(matId).then(fetchAll).catch(() => Alert.alert('Error', 'Failed to delete'));
+            }
+            return;
+        }
         Alert.alert('Delete Material', `Remove "${name}"?`, [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Delete', style: 'destructive', onPress: async () => { await deleteMaterial(matId); fetchAll(); } },
@@ -253,6 +271,12 @@ export default function SubjectDetailScreen() {
     };
 
     const handleDeleteLO = async (id: number) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm('Delete LO? This cannot be undone.')) {
+                deleteLO(id).then(fetchAll).catch(console.error);
+            }
+            return;
+        }
         Alert.alert('Delete LO?', 'This cannot be undone.', [
             { text: 'Cancel' },
             { text: 'Delete', style: 'destructive', onPress: async () => { await deleteLO(id); fetchAll(); } }
@@ -296,6 +320,12 @@ export default function SubjectDetailScreen() {
     };
 
     const handleDeleteCO = async (id: number) => {
+        if (Platform.OS === 'web') {
+            if (window.confirm('Delete CO? This cannot be undone.')) {
+                deleteCO(id).then(fetchAll).catch(console.error);
+            }
+            return;
+        }
         Alert.alert('Delete CO?', 'This cannot be undone.', [
             { text: 'Cancel' },
             { text: 'Delete', style: 'destructive', onPress: async () => { await deleteCO(id); fetchAll(); } }

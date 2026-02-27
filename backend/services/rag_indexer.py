@@ -7,10 +7,88 @@ import re
 import math
 from collections import Counter
 
+import PyPDF2
+from docx import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Reuse the shared ChromaDB client and embedding function from rag.py
 from services.rag import client, embedding_fn, _get_collection, extract_text
+
+
+def extract_text_with_pages(file_path: str, file_type: str) -> tuple[str, list[tuple[int, int]]]:
+    """Extract text and character offsets per page."""
+    text_parts = []
+    page_map = []  # list of (start_char, end_char)
+    current_length = 0
+    
+    if file_type == "pdf":
+        with open(file_path, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    start = current_length
+                    text_parts.append(page_text)
+                    current_length += len(page_text)
+                    text_parts.append("\n")
+                    current_length += 1
+                    page_map.append((start, current_length - 1))
+                else:
+                    page_map.append((current_length, current_length))
+        return "".join(text_parts), page_map
+
+    elif file_type == "docx":
+        doc = Document(file_path)
+        for p in doc.paragraphs:
+            if p.text.strip():
+                start = current_length
+                text_parts.append(p.text)
+                current_length += len(p.text)
+                text_parts.append("\n")
+                current_length += 1
+        return "".join(text_parts), [(0, current_length)]
+
+    elif file_type == "txt":
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+            return text, [(0, len(text))]
+
+    return "", []
+
+
+
+def strip_boilerplate(text: str) -> str:
+    """Stage 1 Noise Filtering: Remove publisher info, copyright, ISBNs, and TOC."""
+    # Remove ISBNs
+    text = re.sub(r'ISBN(?:-1[03])?:?\s*(?=[0-9X]{10,13})[-0-9X]+', '', text, flags=re.IGNORECASE)
+    # Remove copyright lines
+    text = re.sub(r'©.*?(?=\n|$)', '', text)
+    text = re.sub(r'Copyright.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
+    # Remove Tables of Contents lines like "...12" or "... 12"
+    text = re.sub(r'^(.*?)\.{3,}\s*\d+\s*$', '', text, flags=re.MULTILINE)
+    return text
+
+
+def snap_to_sentence(chunk: str) -> str:
+    """Trim leading and trailing partial sentences so every chunk starts and ends cleanly."""
+    chunk = chunk.strip()
+    if not chunk:
+        return chunk
+    
+    # Drop leading partial sentence (before the first period/punctuation followed by a capital letter)
+    if chunk[0].islower() or not chunk[0].isalnum():
+        match = re.search(r'[.!?]\s+([A-Z])', chunk)
+        if match:
+            chunk = chunk[match.start(1):]
+            
+    # Drop trailing partial sentence
+    if not re.search(r'[.!?]["\']?\s*$', chunk):
+        matches = list(re.finditer(r'[.!?]["\']?(?=\s|$)', chunk))
+        if matches:
+            last_match = matches[-1]
+            chunk = chunk[:last_match.end()]
+            
+    return chunk.strip()
 
 
 # ─── Metadata Extraction ───
@@ -132,11 +210,13 @@ def _make_chunk_hash(chunk_text: str) -> str:
 
 # ─── Enhanced Chunking ───
 
-def enhanced_chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+def enhanced_chunk_text(text: str, chunk_size: int = 2000, overlap: int = 400) -> list[str]:
     """
-    Enhanced chunking with larger windows for richer context.
+    Enhanced chunking with larger windows for richer context and sentence snapping.
     Uses RecursiveCharacterTextSplitter with SHA-256 dedup.
     """
+    text = strip_boilerplate(text)
+    
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,
@@ -145,14 +225,18 @@ def enhanced_chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -
 
     raw_chunks = splitter.split_text(text)
 
-    # SHA-256 deduplication
+    # SHA-256 deduplication and sentence snapping
     seen = set()
     unique_chunks = []
     for chunk in raw_chunks:
-        h = _make_chunk_hash(chunk)
+        snapped = snap_to_sentence(chunk)
+        if not snapped or len(snapped) < 50:
+            continue
+            
+        h = _make_chunk_hash(snapped)
         if h not in seen:
             seen.add(h)
-            unique_chunks.append(chunk)
+            unique_chunks.append(snapped)
 
     return unique_chunks
 
@@ -166,8 +250,9 @@ def enhanced_ingest(
     unit_id: int = None,
     topic_id: int = None,
     source: str = "unknown",
-    chunk_size: int = 1000,
-    overlap: int = 200,
+    chunk_size: int = 2000,
+    overlap: int = 400,
+    page_map: list[tuple[int, int]] = None,
 ) -> tuple[str, int]:
     """
     Enhanced ingestion with metadata extraction and stable chunk IDs.
@@ -194,7 +279,37 @@ def enhanced_ingest(
         ids = []
         metadatas = []
         
-        for chunk in batch_chunks:
+        search_idx = 0
+        
+        for k, chunk in enumerate(batch_chunks):
+            # Find start pos of chunk
+            start_idx = text.find(chunk[:100], search_idx)
+            if start_idx == -1:
+                start_idx = search_idx  # fallback
+            else:
+                search_idx = start_idx
+            end_idx = start_idx + len(chunk)
+
+            # Map to pages
+            page_start = 1
+            page_end = 1
+            if page_map:
+                for idx_p, (p_start, p_end) in enumerate(page_map):
+                    if p_start <= start_idx <= p_end:
+                        page_start = idx_p + 1
+                    if p_start <= end_idx <= p_end:
+                        page_end = idx_p + 1
+                if page_end < page_start:
+                    page_end = page_start
+
+            # Section heading detection
+            text_before = text[:start_idx]
+            section_heading = ""
+            recent_text = text_before[-3000:]
+            matches = list(re.finditer(r'(?m)^(Chapter\s+\d+|UNIT\s+\d+[:\-]?|(?:\d+\.)+\d+\s+[A-Z].*)$', recent_text, re.IGNORECASE))
+            if matches:
+                section_heading = matches[-1].group(1).strip()[:100]
+
             chunk_id = _make_stable_chunk_id(material_id, chunk)
             chunk_hash = _make_chunk_hash(chunk)
             keywords = _extract_keywords(chunk, top_n=5)
@@ -213,6 +328,11 @@ def enhanced_ingest(
                 "has_code": str(_has_code(chunk)),
                 "estimated_complexity": _estimate_complexity(chunk),
                 "keywords": ",".join(keywords),
+                "page_start": str(page_start),
+                "page_end": str(page_end),
+                "chunk_index": str(start + k),
+                "section_heading": section_heading,
+                "material_id": str(material_id),
             })
         
         # Upsert to handle re-uploads gracefully

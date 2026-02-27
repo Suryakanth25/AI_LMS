@@ -10,22 +10,22 @@ OLLAMA_BASE = "http://localhost:11434"
 
 AGENTS = {
     "logician": {
-        "model": "phi3.5",
+        "model": "phi4-mini:latest",
         "role": "Strict adherence to facts from the study material. Generate questions grounded in source content.",
         "temperature": 0.5,  # Lower = more precise/factual
     },
     "creative": {
-        "model": "gemma2:2b",
+        "model": "llama3.2:3b-instruct-q4_K_M",
         "role": "Review questions for accuracy, clarity, and suggest improvements while staying true to source material.",
         "temperature": 0.7,
     },
     "technician": {
-        "model": "qwen2.5:3b",
+        "model": "qwen2.5:3b-instruct-q4_K_M",
         "role": "Generate precise, well-structured questions with proper formatting and technical accuracy.",
         "temperature": 0.5,  # Lower = more precise
     },
     "chairman": {
-        "model": "phi3.5",
+        "model": "phi4-mini:latest",
         "role": "Final arbiter. Score drafts, select the best, assign confidence score based on factual accuracy.",
         "temperature": 0.4,  # Lowest = most deterministic selection
     },
@@ -46,7 +46,7 @@ DIRECTNESS_PREFIX_BLACKLIST = [
 FORBIDDEN_SCENARIO_PATTERNS = [
     r"\ba clinician\b", r"\ba patient named\b", r"\bdr\.\s+\w+\b",
 ]
-DEDUP_SIMILARITY_THRESHOLD = 0.85
+DEDUP_SIMILARITY_THRESHOLD = 0.95
 
 # Session-level dedup state (reset per generation job)
 _session_questions: list[str] = []
@@ -111,6 +111,9 @@ def parse_json(text: str):
     """Attempt to parse JSON from LLM output, handling markdown fences and extra text."""
     if not text:
         return None
+    
+    # Strip trailing commas that often break strict python json.loads
+    text = re.sub(r',\s*([}\]])', r'\1', text)
     try:
         return json.loads(text.strip())
     except json.JSONDecodeError:
@@ -259,11 +262,12 @@ def validate_question_output(
     # MCQ-specific
     if question_type == "MCQ":
         opts = parsed.get("options", [])
-        if not isinstance(opts, list) or len(opts) < 4:
-            errors.append(f"MCQ must have 4 options, got {len(opts) if isinstance(opts, list) else 0}")
+        if not isinstance(opts, list) or len(opts) != 4:
+            errors.append(f"MCQ must have exactly 4 options, got {len(opts) if isinstance(opts, list) else 0}")
         ca = parsed.get("correct_answer", "")
-        if isinstance(ca, str) and ca.strip() and ca.strip()[0] not in "ABCD":
-            errors.append(f"correct_answer should start with A/B/C/D, got '{ca[:10]}'")
+        if isinstance(ca, str):
+            if not isinstance(opts, list) or ca not in opts:
+                errors.append(f"correct_answer '{ca}' MUST exactly match one of the options in the array: {opts}")
 
     # Citation check
     used_chunks = parsed.get("used_chunks", [])
@@ -292,6 +296,112 @@ def validate_question_output(
                 break
 
     return errors
+
+
+# ─── (4B) MCQ Option Repair ───
+
+async def repair_mcq_options(
+    final_question: dict,
+    model: str,
+    question_type: str,
+    chunk_map: dict,
+) -> dict:
+    """
+    If an MCQ has fewer or more than 4 options, attempt a one-shot LLM repair.
+    If repair fails, pad with placeholder distractors or truncate to 4.
+    Returns the (possibly fixed) question dict.
+    """
+    if question_type != "MCQ" or not isinstance(final_question, dict):
+        return final_question
+
+    opts = final_question.get("options", [])
+    if not isinstance(opts, list):
+        opts = []
+
+    if len(opts) == 4:
+        return final_question  # Already correct
+
+    print(f"[Swarm] MCQ option repair: got {len(opts)} options, need 4. Attempting LLM fix...")
+
+    # Build a targeted repair prompt
+    q_text = final_question.get("question_text") or final_question.get("question") or ""
+    correct = final_question.get("correct_answer", "")
+    repair_prompt = (
+        f"The following MCQ question has {len(opts)} options but MUST have exactly 4.\n"
+        f"Question: {q_text}\n"
+        f"Current options: {json.dumps(opts)}\n"
+        f"Correct answer: {correct}\n\n"
+    )
+    if len(opts) < 4:
+        repair_prompt += (
+            f"Add {4 - len(opts)} plausible but INCORRECT distractor(s) so there are exactly 4 options total.\n"
+            "The new distractors must be relevant to the question topic and similar in length/style to existing options.\n"
+        )
+    else:
+        repair_prompt += (
+            "Remove the weakest/most redundant options so there are exactly 4 options total.\n"
+            "Keep the correct answer and the 3 best distractors.\n"
+        )
+    repair_prompt += (
+        'Output RAW JSON ONLY: {"options": ["opt1", "opt2", "opt3", "opt4"], "correct_answer": "one of them"}\n'
+        "Do NOT prefix options with A, B, C, D."
+    )
+
+    try:
+        repaired_text, _ = await call_ollama(
+            model, repair_prompt,
+            "You are an MCQ option specialist. Output valid JSON only.",
+            temperature=0.3, num_predict=300,
+        )
+        repaired = parse_json(repaired_text)
+        if (
+            repaired
+            and isinstance(repaired, dict)
+            and isinstance(repaired.get("options"), list)
+            and len(repaired["options"]) == 4
+        ):
+            final_question["options"] = repaired["options"]
+            # Update correct_answer if the repair provided one that matches
+            rep_ca = repaired.get("correct_answer", "")
+            if rep_ca and rep_ca in repaired["options"]:
+                final_question["correct_answer"] = rep_ca
+            elif correct in repaired["options"]:
+                pass  # Keep existing correct_answer
+            else:
+                # correct_answer doesn't match any option — use first option as fallback
+                final_question["correct_answer"] = repaired["options"][0]
+            print("[Swarm] MCQ option repair succeeded via LLM.")
+            return final_question
+    except Exception as e:
+        print(f"[Swarm] MCQ option LLM repair failed: {e}")
+
+    # Fallback: mechanical pad / truncate
+    print("[Swarm] MCQ option repair: falling back to mechanical fix.")
+    if len(opts) > 4:
+        # Keep correct_answer + first 3 others
+        if correct in opts:
+            others = [o for o in opts if o != correct][:3]
+            final_question["options"] = others + [correct]
+        else:
+            final_question["options"] = opts[:4]
+    elif len(opts) < 4:
+        # Pad with placeholder distractors
+        placeholders = ["None of the above", "All of the above", "Not applicable", "Cannot be determined"]
+        while len(opts) < 4:
+            for ph in placeholders:
+                if ph not in opts and ph != correct:
+                    opts.append(ph)
+                    break
+            else:
+                opts.append(f"Option {len(opts) + 1}")
+            if len(opts) >= 4:
+                break
+        final_question["options"] = opts[:4]
+        # Ensure correct_answer is still in options
+        if correct and correct not in final_question["options"]:
+            final_question["options"][-1] = correct
+
+    return final_question
 
 
 # ─── (5) Dedup ───
@@ -329,7 +439,10 @@ def get_format_instruction(question_type: str, bloom: str) -> str:
     
     if question_type == "MCQ":
         return f"""Output JSON format (RAW JSON ONLY, no markdown):
-{{"question_text": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "correct_answer": "B", "explanation": "Why B is correct, referencing study material...", {citation_fields}}}"""
+{{"question_text": "...", "options": ["Option 1", "Option 2", "Option 3", "Option 4"], "correct_answer": "Option 2", "explanation": "Why Option 2 is correct...", {citation_fields}}}
+CRITICAL: You MUST provide EXACTLY 4 strings in the "options" array.
+CRITICAL: The "correct_answer" MUST be an EXACT VERBATIM STRING MATCH to one of the 4 strings in the "options" array.
+Do NOT prefix options with A, B, C, D. Do NOT include options in the question text."""
     elif question_type == "Short Notes":
         return f"""Output JSON format (RAW JSON ONLY, no markdown):
 {{"question_text": "...", "key_points": ["Point 1", "Point 2", "Point 3"], "marks": 5, {citation_fields}}}"""
@@ -393,12 +506,17 @@ Difficulty: {difficulty}
 
 GROUNDING & CITATION RULES:
 - Question MUST be derived from the STUDY MATERIAL chunks above.
-- You MUST cite which chunks you used in "used_chunks" (e.g., ["C1", "C3"]).
-- You MUST include "supporting_quotes" with exact quotes from those chunks.
+- You MUST list the chunks used in the JSON array `"used_chunks"`.
+- You MUST provide evidence in the JSON array `"supporting_quotes"`.
 - Do NOT hallucinate facts not in the material.
+- UNIQUE GENERATION (CRITICAL): If the context contains a "(Sample Question Reference)", do NOT copy the sample question verbatim. Generate a COMPLETELY NEW and UNIQUE question on the same topic/skill.
 
 EXAM STYLE RULES:
-- STANDALONE: Do NOT write "based on the passage" or "according to the document". Write it as a standard exam question.
+- STANDALONE: Do NOT write "based on the passage" or etc. Write it as a standard exam question.
+- FORBIDDEN WORDS (CRITICAL): NEVER use the words "chunk", "chunks", "context", "provided text", "material", "book", "chapter", "page", or "section" inside the actual `"question_text"`, `"correct_answer"`, or `"options"` strings.
+- SOURCE BLINDNESS (CRITICAL): NEVER mention author names, book titles, or source names (e.g., "according to Mary Ansell", "as explained by", "in the book"). Make the question a universal truth standalone exam question.
+- SEPARATION OF CONCERNS: The `"question_text"` string must ONLY contain the question itself. DO NOT append citations or metadata like `(used_chunks=['C1'])` to the question string.
+- NO OPTIONS IN QUESTION TEXT: Do NOT include MCQ options inside the "question_text" string. They belong ONLY in the "options" array.
 - VARIETY: Cover different aspects — use cases, limitations, comparisons, implementation details.
 - Do NOT start with "What is", "Define", "State", "List", or "Name" unless Bloom level is Remember/Understand.
 - Explicitly map to a Learning Outcome or Course Outcome from the syllabus if available.
@@ -429,7 +547,8 @@ YOUR REVIEW TASKS:
 3. Is it at the correct Bloom's level ({bloom})? If {bloom} is apply/analyze/evaluate/create, reject if it's just recall.
 4. For MCQs: are all 4 distractors plausible? Is the correct answer unambiguous?
 5. Does it start with forbidden patterns ("What is", "Define", "List")? Flag if bloom >= apply.
-6. Does it reference the passage/document directly? (should NOT — must be standalone exam style)
+6. Does it reference the passage/document/book/author directly? (should NOT — must be standalone exam style). Ensure it NEVER uses words like "chunk", "material", "chapter", "book", "page", or author names like "Mary Ansell".
+7. For MCQs: Ensure options do NOT contain A, B, C, D prefixes and are NOT included in the question text.
 
 OUTPUT JSON format (RAW JSON ONLY):
 {{"score": <1-10>, "issues": ["issue1", "issue2"], "improved_question": <FULL QUESTION JSON IN SAME SCHEMA AS DRAFT including used_chunks and supporting_quotes>, "grounding_report": {{"factually_grounded": true/false, "missing_evidence": ["..."], "directness_flag": true/false}}}}
@@ -477,11 +596,17 @@ Difficulty: {difficulty}
 
 GROUNDING & CITATION RULES:
 - Question MUST be based on the study material chunks above.
-- Include "used_chunks" and "supporting_quotes" citing exact text.
+- You MUST list the chunks used in the JSON array `"used_chunks"`.
+- You MUST provide evidence in the JSON array `"supporting_quotes"`.
 - Do NOT hallucinate.
+- UNIQUE GENERATION (CRITICAL): If the context contains a "(Sample Question Reference)", do NOT copy the sample question verbatim. Generate a COMPLETELY NEW and UNIQUE question on the same topic/skill.
 
 EXAM STYLE:
-- STANDALONE exam question — no "based on the passage".
+- STANDALONE exam question — no "based on the passage" or "in this chapter".
+- FORBIDDEN WORDS (CRITICAL): NEVER use "chunk", "chunks", "context", "provided text", "material", "book", "chapter", "page", or "section" inside the actual `"question_text"`, `"correct_answer"`, or `"options"` strings.
+- SOURCE BLINDNESS (CRITICAL): NEVER mention author names, book titles, or source names (e.g., "according to the author", "as explained by Mary Ansell"). It MUST be a universal truth standalone exam question.
+- SEPARATION OF CONCERNS: The `"question_text"` string must ONLY contain the question itself. DO NOT append citations or metadata like `(used_chunks=['C1'])` to the question string.
+- NO OPTIONS IN QUESTION TEXT: Do NOT include MCQ options inside the "question_text" string. They belong ONLY in the "options" array.
 - Do NOT start with "What is"/"Define"/"List" for Bloom >= apply.
 - Map to CO/LO codes if available.
 
@@ -512,7 +637,7 @@ SELECTION CRITERIA (in priority order):
 1. FACTUAL ACCURACY: Is it 100% grounded in the Study Material? Are cited chunks valid?
 2. BLOOM ALIGNMENT: Does it match {bloom.upper()} level? (reject recall-only if bloom >= apply)
 3. SYLLABUS ALIGNMENT: Does it map to CO/LO codes from the syllabus mapping above?
-4. EXAM QUALITY: Standalone? No passage references? Plausible distractors (MCQ)?
+4. EXAM QUALITY: Standalone? No passage/author references? Plausible distractors (MCQ)?
 5. CITATION QUALITY: Does it include used_chunks and supporting_quotes?
 
 CONFIDENCE SCORING GUIDE:
@@ -527,10 +652,11 @@ OUTPUT JSON format (RAW JSON ONLY):
 
 CRITICAL REQUIREMENTS:
 - "action" must be "accept" or "regenerate"
-- "selected_question" must be a flat JSON with "question_text" as direct key
+- "selected_question" must be a flat JSON with "question_text" as direct key.
+- SEPARATION OF CONCERNS: Review the `"question_text"`. It MUST ONLY contain the question itself. DO NOT include citations like `(used_chunks=['C1'])` inside the text string.
 - "obe_alignment" is MANDATORY — you MUST justify Bloom's level, CO codes, and LO codes
-- Use the ACTUAL CO/LO codes and descriptions from the SYLLABUS MAPPING above
-- If no CO/LO codes are available in the syllabus, set codes to [] and write "No CO/LO codes provided in syllabus" in the justification
+- Use the ACTUAL CO/LO codes and descriptions from the SYLLABUS MAPPING above. DO NOT HALLUCINATE OR INVENT CO/LO CODES.
+- If the SYLLABUS MAPPING says "[No COs mapped for this unit]" or "[No LOs mapped for this unit]", set the respective arrays to [] and write "No codes provided" in the justification.
 - Output RAW JSON ONLY. NO MARKDOWN. NO COMMENTS."""
 
 
@@ -626,9 +752,9 @@ async def generate_single_question(
     # ... (Syllabus/Context formatting remains same) ...
     syllabus_context = "No specific syllabus mapping provided."
     if syllabus_data:
-        los = "\n".join([f"- {acc}: {desc}" for acc, desc in syllabus_data.get("los", {}).items()]) if syllabus_data.get("los") else "None"
-        cos = "\n".join([f"- {acc}: {desc}" for acc, desc in syllabus_data.get("cos", {}).items()]) if syllabus_data.get("cos") else "None"
-        blooms = "\n".join([f"- {level}: {weight}%" for level, weight in syllabus_data.get("bloom_distribution", {}).items()]) if syllabus_data.get("bloom_distribution") else "None"
+        los = "\n".join([f"- {acc}: {desc}" for acc, desc in syllabus_data.get("los", {}).items()]) if syllabus_data.get("los") else "[No LOs mapped for this unit]"
+        cos = "\n".join([f"- {acc}: {desc}" for acc, desc in syllabus_data.get("cos", {}).items()]) if syllabus_data.get("cos") else "[No COs mapped for this unit]"
+        blooms = "\n".join([f"- {level}: {weight}%" for level, weight in syllabus_data.get("bloom_distribution", {}).items()]) if syllabus_data.get("bloom_distribution") else "[No Bloom data]"
         syllabus_context = f"SYLLABUS MAPPING:\nLearning Outcomes: {los}\nCourse Outcomes: {cos}\nBloom's: {blooms}\n"
 
     sample_context = f"\nSAMPLE QUESTIONS:\n{sample_questions}\n" if sample_questions else ""
@@ -644,7 +770,8 @@ async def generate_single_question(
 
     for attempt in range(1, max_attempts + 1):
         attempt_timings = {}
-        diversity_hint = f"\nAVOID REPEATING: {len(_session_questions)} previous Qs.\n" if _session_questions else ""
+        recent_qs = _session_questions[-5:] if '_session_questions' in globals() else []
+        diversity_hint = f"\nEXCLUSION LIST (Do NOT generate questions similar to these):\n" + "\n".join([f"- {q[:150]}..." for q in recent_qs]) + "\n" if recent_qs else ""
 
         # --- Phase 1: Agent A (Logician) ---
         # Temp 0.4 for stability, num_predict 800
@@ -720,6 +847,14 @@ async def generate_single_question(
         if isinstance(final_question, list):
             # Extract first dict from the list
             final_question = next((item for item in final_question if isinstance(item, dict)), None)
+
+        # ─── Auto-repair MCQ options if not exactly 4 ───
+        if question_type == "MCQ" and isinstance(final_question, dict):
+            mcq_opts = final_question.get("options", [])
+            if not isinstance(mcq_opts, list) or len(mcq_opts) != 4:
+                final_question = await repair_mcq_options(
+                    final_question, chairman_model, question_type, chunk_map,
+                )
 
         # Validate the selected question
         validation_errors = validate_question_output(

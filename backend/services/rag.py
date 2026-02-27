@@ -114,7 +114,14 @@ def ingest(subject_id: int, material_id: int, chunks: list[str], unit_id: int = 
     return (collection_name, total_chunks)
 
 
-def _mmr_rerank(query_embedding: list[float], doc_embeddings: list[list[float]], documents: list[str], k: int = 5, lambda_mult: float = 0.7) -> list[str]:
+def _mmr_rerank(
+    query_embedding: list[float],
+    doc_embeddings: list[list[float]],
+    documents: list[str],
+    k: int = 5,
+    lambda_mult: float = 0.5,
+    doc_ids: list[str] = None,
+) -> tuple[list[str], list[str]]:
     """
     Maximal Marginal Relevance (MMR) re-ranking.
     Balances relevance to the query with diversity among selected documents.
@@ -122,7 +129,7 @@ def _mmr_rerank(query_embedding: list[float], doc_embeddings: list[list[float]],
     lambda_mult: 0.0 = max diversity, 1.0 = max relevance
     """
     if not documents:
-        return []
+        return [], []
 
     query_vec = np.array(query_embedding)
     doc_vecs = np.array(doc_embeddings)
@@ -158,7 +165,9 @@ def _mmr_rerank(query_embedding: list[float], doc_embeddings: list[list[float]],
         selected_indices.append(best_idx)
         remaining.remove(best_idx)
 
-    return [documents[i] for i in selected_indices]
+    final_docs = [documents[i] for i in selected_indices]
+    final_ids = [doc_ids[i] for i in selected_indices] if doc_ids else []
+    return final_docs, final_ids
 
 
 def retrieve(subject_id: int, query: str, n_results: int = 5, unit_id: int = None, topic_id: int = None, unit_name: str = None) -> list[str]:
@@ -173,7 +182,7 @@ def retrieve(subject_id: int, query: str, n_results: int = 5, unit_id: int = Non
         if collection.count() == 0:
             return []
         
-        fetch_k = max(n_results * 6, 30)  # Fetch many candidates for MMR
+        fetch_k = max(n_results * 8, 50)  # Fetch many candidates for MMR
 
         # Step 1: Scoped Search (Try Unit/Topic first)
         where_clause = None
@@ -227,7 +236,8 @@ def retrieve(subject_id: int, query: str, n_results: int = 5, unit_id: int = Non
         # Step 3: MMR Re-ranking for diversity
         if len(raw_embeddings) > 0:
             query_embedding = embedding_fn([query])[0]
-            return _mmr_rerank(query_embedding, raw_embeddings, raw_docs, k=n_results, lambda_mult=0.7)
+            final_docs, _ = _mmr_rerank(query_embedding, raw_embeddings, raw_docs, k=n_results, lambda_mult=0.4)
+            return final_docs
         else:
             # Fallback: simple dedup if embeddings aren't available
             unique = []

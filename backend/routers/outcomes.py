@@ -35,10 +35,21 @@ def create_subject_co(subject_id: int, data: COCreate, db: Session = Depends(get
 
     # Auto-generate code if missing
     if not data.code:
-        count = db.query(CourseOutcome).filter(CourseOutcome.subject_id == subject_id).count()
-        data.code = f"CO-{count + 1}"
+        # Find a unique code by checking sequentially, starting from count + 1
+        base_count = db.query(CourseOutcome).filter(CourseOutcome.subject_id == subject_id).count()
+        new_num = base_count + 1
+        while True:
+            candidate = f"CO-{new_num}"
+            exists = db.query(CourseOutcome).filter(
+                CourseOutcome.subject_id == subject_id, 
+                CourseOutcome.code == candidate
+            ).first()
+            if not exists:
+                data.code = candidate
+                break
+            new_num += 1
     else:
-        # Check uniqueness
+        # Check uniqueness of user-provided code
         exists = db.query(CourseOutcome).filter(
             CourseOutcome.subject_id == subject_id, 
             CourseOutcome.code == data.code
@@ -117,11 +128,18 @@ def create_unit_lo(unit_id: int, data: LOCreate, db: Session = Depends(get_db)):
     
     # Auto-generate code if missing
     if not data.code:
-        count = db.query(LearningOutcome).filter(LearningOutcome.unit_id == unit_id).count()
-        # count + 1 might conflict if LOs were deleted, but simple enough for prototype
-        # Better: find max index or just use UUID if strict uniqueness needed. 
-        # Using simple count for now per req.
-        data.code = f"LO-{unit.unit_number}.{count + 1}"
+        base_count = db.query(LearningOutcome).filter(LearningOutcome.unit_id == unit_id).count()
+        new_num = base_count + 1
+        while True:
+            candidate = f"LO-{unit.unit_number}.{new_num}"
+            exists = db.query(LearningOutcome).filter(
+                LearningOutcome.unit_id == unit_id,
+                LearningOutcome.code == candidate
+            ).first()
+            if not exists:
+                data.code = candidate
+                break
+            new_num += 1
     else:
         exists = db.query(LearningOutcome).filter(
             LearningOutcome.unit_id == unit_id,
