@@ -54,7 +54,7 @@ export default function TabBar({ state, descriptors, navigation }: BottomTabBarP
                         accessibilityRole="button"
                         accessibilityState={isFocused ? { selected: true } : {}}
                         accessibilityLabel={options.tabBarAccessibilityLabel}
-                        testID={options.tabBarTestID}
+                        testID={(options as any).tabBarTestID}
                         onPress={onPress}
                         onLongPress={onLongPress}
                         className="flex-1 items-center justify-center py-2 gap-1"

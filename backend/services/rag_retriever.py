@@ -137,7 +137,7 @@ def extract_subtopics(collection, topic_name: str, where_clause: dict) -> list[s
             "stream": False,
             "temperature": 0.3
         }
-        resp = requests.post("http://localhost:11434/api/generate", json=payload, timeout=20)
+        resp = requests.post("http://127.0.0.1:11434/api/generate", json=payload, timeout=20)
         if resp.status_code == 200:
             text = resp.json().get("response", "")
             return [t.strip().strip("-*") for t in text.split(",") if len(t.strip()) > 3][:12]

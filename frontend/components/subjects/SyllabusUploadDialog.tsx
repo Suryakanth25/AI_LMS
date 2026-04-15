@@ -36,7 +36,7 @@ export const SyllabusUploadDialog = ({ visible, onClose, topicTitle }: SyllabusU
         setWeights(prev => ({ ...prev, [name]: val }));
     };
 
-    const totalWeight = Object.values(weights).reduce((a: any, b: any) => a + b, 0);
+    const totalWeight = (Object.values(weights) as number[]).reduce((a, b) => Number(a) + Number(b), 0);
 
     return (
         <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>

@@ -578,34 +578,6 @@ def delete_sample_question(sq_id: int, db: Session = Depends(get_db)):
     return {"message": "Sample Question deleted"}
 
 
-@router.get("/subjects/{subject_id}/materials", response_model=list[MaterialResponse])
-def list_materials(subject_id: int, db: Session = Depends(get_db)):
-    materials = (
-        db.query(StudyMaterial)
-        .filter(StudyMaterial.subject_id == subject_id)
-        .all()
-    )
-    return materials
-
-
-@router.delete("/materials/{material_id}")
-def delete_material(material_id: int, db: Session = Depends(get_db)):
-    material = db.query(StudyMaterial).filter(StudyMaterial.id == material_id).first()
-    if not material:
-        raise HTTPException(status_code=404, detail="Material not found")
-
-    # Delete from ChromaDB
-    rag.delete_material_chunks(material.subject_id, material.id)
-
-    # Delete file from disk
-    if material.file_path and os.path.exists(material.file_path):
-        os.remove(material.file_path)
-
-    db.delete(material)
-    db.commit()
-    return {"message": "Material deleted"}
-
-
 @router.get("/subjects/{subject_id}/rag-status")
 def rag_status(subject_id: int, db: Session = Depends(get_db)):
     subject = db.query(Subject).filter(Subject.id == subject_id).first()

@@ -58,7 +58,7 @@ export default function GenerateScreen() {
 
     useEffect(() => {
         return () => {
-            if (pollRef.current) clearInterval(pollRef.current);
+            if (pollRef.current) clearTimeout(pollRef.current);
             if (timerRef.current) clearInterval(timerRef.current);
         };
     }, []);
@@ -104,21 +104,26 @@ export default function GenerateScreen() {
             setElapsed(0);
             setView('generating');
 
-            // Start polling
-            pollRef.current = setInterval(async () => {
+            // Start polling (recursive to prevent overlapping requests)
+            const poll = async () => {
                 try {
                     const job = await pollJob(result.job_id);
                     setJobData(job);
                     if (job.status === 'completed') {
-                        clearInterval(pollRef.current);
+                        clearTimeout(pollRef.current);
                         clearInterval(timerRef.current);
                         setView('complete');
+                        return;
                     } else if (job.status === 'failed') {
-                        clearInterval(pollRef.current);
+                        clearTimeout(pollRef.current);
                         clearInterval(timerRef.current);
+                        return;
                     }
                 } catch (e) { }
-            }, 2000);
+                pollRef.current = setTimeout(poll, 2000);
+            };
+            if (pollRef.current) clearTimeout(pollRef.current);
+            pollRef.current = setTimeout(poll, 2000);
 
             // Start timer
             timerRef.current = setInterval(() => {
@@ -371,7 +376,7 @@ export default function GenerateScreen() {
                             <Text className="text-red-500 text-5xl mb-4">❌</Text>
                             <Text className="text-red-600 font-bold text-xl mb-2">Generation Failed</Text>
                             <Text className="text-gray-500 text-center mb-6">{jobData?.error_message || 'An error occurred'}</Text>
-                            <TouchableOpacity onPress={() => { setView('select'); clearInterval(pollRef.current); clearInterval(timerRef.current); }}>
+                            <TouchableOpacity onPress={() => { setView('select'); clearTimeout(pollRef.current); clearInterval(timerRef.current); }}>
                                 <LinearGradient colors={['#EF4444', '#DC2626']} className="px-8 py-3 rounded-xl">
                                     <Text className="text-white font-bold">Try Again</Text>
                                 </LinearGradient>
