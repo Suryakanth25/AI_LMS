@@ -12,6 +12,22 @@ import '../global.css';
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
+import { AuthProvider } from '../context/AuthContext';
+
+function RootLayoutNav() {
+  return (
+    <ThemeProvider value={DefaultTheme}>
+      <View style={{ flex: 1, backgroundColor: 'white' }}>
+        <StatusBar style="dark" />
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: 'white' } }}>
+          <Stack.Screen name="login" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        </Stack>
+      </View>
+    </ThemeProvider>
+  );
+}
+
 export default function RootLayout() {
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
@@ -21,7 +37,6 @@ export default function RootLayout() {
     if (loaded) {
       SplashScreen.hideAsync();
     } else {
-      // Fallback: Force hide splash screen after 3 seconds if fonts are stuck
       const timeout = setTimeout(() => {
         SplashScreen.hideAsync();
       }, 3000);
@@ -29,20 +44,13 @@ export default function RootLayout() {
     }
   }, [loaded]);
 
-
   if (!loaded) {
     return null;
   }
 
   return (
-    <ThemeProvider value={DefaultTheme}>
-      <View style={{ flex: 1, backgroundColor: 'white' }}>
-        <StatusBar style="dark" />
-
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: 'white' } }}>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        </Stack>
-      </View>
-    </ThemeProvider>
+    <AuthProvider>
+      <RootLayoutNav />
+    </AuthProvider>
   );
 }

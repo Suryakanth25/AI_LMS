@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import engine, Base
-from routers import subjects, generation, vetting, benchmarks, outcomes, training, tools
+from routers import subjects, generation, vetting, benchmarks, outcomes, training, tools, auth
 
 app = FastAPI(title="The Council API", version="1.0.0")
 
@@ -42,6 +42,7 @@ def startup():
 
 
 # Routers
+app.include_router(auth.router)
 app.include_router(subjects.router)
 app.include_router(outcomes.router)
 app.include_router(generation.router)
@@ -49,7 +50,6 @@ app.include_router(vetting.router, prefix="/api/vetting", tags=["Vetting"])
 app.include_router(benchmarks.router)
 app.include_router(training.router, prefix="/api/training", tags=["Training"])
 app.include_router(tools.router)
-
 
 @app.get("/")
 def root():

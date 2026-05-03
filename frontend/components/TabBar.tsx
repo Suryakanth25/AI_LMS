@@ -1,10 +1,11 @@
 import React from 'react';
 import { View, TouchableOpacity, Text } from 'react-native';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
-import { BookOpen, Sparkles, Check, ChartBar } from 'lucide-react-native';
+import { BookOpen, Sparkles, Check, ChartBar, User, Home } from 'lucide-react-native';
 
 // Map route names to icons and labels — 4 tabs, no Home
 const TAB_ICONS: Record<string, any> = {
+    index: Home,
     subjects: BookOpen,
     generate: Sparkles,
     vetting: Check,
@@ -12,6 +13,7 @@ const TAB_ICONS: Record<string, any> = {
 };
 
 const TAB_LABELS: Record<string, string> = {
+    index: 'Home',
     subjects: 'Subjects',
     generate: 'Generate',
     vetting: 'Vetting',

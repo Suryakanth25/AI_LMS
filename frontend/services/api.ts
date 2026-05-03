@@ -1,5 +1,6 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ── Auto-detect the backend IP from Expo's dev server ──
 // This reads the IP that Expo uses to serve the JS bundle (your PC's LAN IP)
@@ -30,13 +31,20 @@ const API_BASE = getApiBase();
 // --- Helper: Generic Request Wrapper ---
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const url = `${API_BASE}${endpoint}`;
+    if (options?.body instanceof FormData) {
+        console.log(`[API] Body is FormData for ${url}`);
+    }
     console.log(`[API] Request: ${options?.method || 'GET'} ${url}`);
 
-    const headers = {
+    const token = await AsyncStorage.getItem('userToken');
+    const headers: any = {
         ...options?.headers,
-        'Bypass-Tunnel-Reminder': 'true', // Required for localtunnel
-        'ngrok-skip-browser-warning': 'true', // Just in case
+        'Bypass-Tunnel-Reminder': 'true', 
+        'ngrok-skip-browser-warning': 'true', 
     };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
 
     try {
         const res = await fetch(url, { ...options, headers });
@@ -61,7 +69,7 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
 
         return res.json();
     } catch (error) {
-        console.error(`[API] Network/Parse Error:`, error);
+        console.error(`[API] Network/Parse Error for ${url}:`, error);
         throw error;
     }
 }
@@ -262,6 +270,9 @@ export const startTraining = (subjectId: number) =>
 
 export const getTrainingStatus = (subjectId: number) =>
     request<any>(`/api/training/status/${subjectId}`);
+
+// ─── Profile ───
+export const getProfile = () => request<any>('/auth/me');
 
 export const getSkillContent = (subjectId: number) =>
     request<any>(`/api/training/skill/${subjectId}`);

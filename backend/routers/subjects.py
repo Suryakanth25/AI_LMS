@@ -14,6 +14,8 @@ from schemas import (
     MaterialResponse,
 )
 from services import rag, rag_indexer
+from auth_utils import get_current_faculty
+from models import Faculty
 
 router = APIRouter(prefix="/api", tags=["subjects"])
 
@@ -21,8 +23,8 @@ router = APIRouter(prefix="/api", tags=["subjects"])
 # --- Subjects CRUD ---
 
 @router.get("/subjects/", response_model=list[SubjectResponse])
-def list_subjects(db: Session = Depends(get_db)):
-    subjects = db.query(Subject).all()
+def list_subjects(db: Session = Depends(get_db), current_faculty: Faculty = Depends(get_current_faculty)):
+    subjects = db.query(Subject).filter(Subject.faculty_id == current_faculty.id).all()
     result = []
     for s in subjects:
         unit_count = len(s.units)
@@ -41,8 +43,8 @@ def list_subjects(db: Session = Depends(get_db)):
 
 
 @router.get("/subjects/{subject_id}")
-def get_subject(subject_id: int, db: Session = Depends(get_db)):
-    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+def get_subject(subject_id: int, db: Session = Depends(get_db), current_faculty: Faculty = Depends(get_current_faculty)):
+    subject = db.query(Subject).filter(Subject.id == subject_id, Subject.faculty_id == current_faculty.id).first()
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
 
@@ -150,9 +152,9 @@ def create_subject(data: SubjectCreate, db: Session = Depends(get_db)):
     )
 
 
-@router.delete("/subjects/{subject_id}")
-def delete_subject(subject_id: int, db: Session = Depends(get_db)):
-    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+@router.delete("/subjects/{subject_id}", status_code=204)
+def delete_subject(subject_id: int, db: Session = Depends(get_db), current_faculty: Faculty = Depends(get_current_faculty)):
+    subject = db.query(Subject).filter(Subject.id == subject_id, Subject.faculty_id == current_faculty.id).first()
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
     
@@ -184,8 +186,8 @@ def delete_subject(subject_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/subjects/{subject_id}/units", response_model=UnitResponse)
-def create_unit(subject_id: int, data: UnitCreate, db: Session = Depends(get_db)):
-    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+def create_unit(subject_id: int, data: UnitCreate, db: Session = Depends(get_db), current_faculty: Faculty = Depends(get_current_faculty)):
+    subject = db.query(Subject).filter(Subject.id == subject_id, Subject.faculty_id == current_faculty.id).first()
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
         
@@ -244,6 +246,7 @@ async def upload_material(
     subject_id: int,
     db: Session = Depends(get_db),
 ):
+    print(f"DEBUG: upload_material called for subject {subject_id}")
     # Manual form parsing to bypass Python 3.14/Pydantic annotation bugs
     form = await request.form()
     

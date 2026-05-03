@@ -9,6 +9,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import Modal from 'react-native-modal';
 import * as DocumentPicker from 'expo-document-picker';
 import Slider from '@react-native-community/slider';
+import TheCouncilUltimateLogo from '@/components/TheCouncilUltimateLogo';
 import {
     getSubjectDetail, getMaterials, uploadMaterial, deleteMaterial, getRagStatus,
     createUnit, deleteUnit, createTopic, deleteTopic,
@@ -77,6 +78,7 @@ export default function SubjectDetailScreen() {
     // Sample Question Modal
     const [topicQuestions, setTopicQuestions] = useState<Record<number, any[]>>({}); // Cache questions
     const [uploadingSqTopicId, setUploadingSqTopicId] = useState<number | null>(null); // Track which topic is uploading
+    const [isUploading, setIsUploading] = useState(false);
 
     useEffect(() => { fetchAll(); }, [numId]);
 
@@ -184,22 +186,27 @@ export default function SubjectDetailScreen() {
 
             const file = result.assets[0];
             setUploadingTopicId(topicId);
+            setIsUploading(true);
 
-            // Web-specific fix: Use the raw File object if available
-            let formFile: any;
-            if (Platform.OS === 'web' && (file as any).file) {
-                formFile = (file as any).file;
-            } else {
-                formFile = { uri: file.uri, name: file.name, type: file.mimeType || 'application/octet-stream' } as any;
-            }
+            // Give UI a moment to show modal
+            await new Promise(r => setTimeout(r, 400));
 
-            await uploadMaterial(numId, formFile, topicId); // Pass topicId
+            // Construct standard React Native file object
+            const formFile = {
+                uri: file.uri,
+                name: file.name || 'document.pdf',
+                type: file.mimeType || 'application/pdf',
+            } as any;
+
+            await uploadMaterial(numId, formFile, topicId);
 
             await fetchAll();
-        } catch (e) {
-            Alert.alert('Error', 'Upload failed');
+        } catch (e: any) {
+            console.error('Upload Error Details:', e);
+            Alert.alert('Error', e.message || 'Upload failed');
         } finally {
             setUploadingTopicId(null);
+            setIsUploading(false);
         }
     };
 
@@ -922,6 +929,30 @@ export default function SubjectDetailScreen() {
                                 <Text className="text-white font-bold">Save Mapping</Text>
                             </LinearGradient>
                         </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Uploading Status Modal */}
+            <Modal
+                isVisible={isUploading}
+                backdropOpacity={0.6}
+                backdropColor="#000"
+                animationIn="fadeInUp"
+                animationOut="fadeOutDown"
+                style={{ margin: 0, justifyContent: 'center', alignItems: 'center' }}
+            >
+                <View className="bg-white rounded-[32px] p-8 items-center shadow-2xl w-72 border border-blue-100">
+                    <TheCouncilUltimateLogo size={80} primaryColor="#3B82F6" accentColor="#60A5FA" />
+                    <View className="mt-8 items-center">
+                        <Text className="text-gray-900 font-bold text-xl mb-2">Analyzing...</Text>
+                        <Text className="text-gray-500 text-center text-sm leading-5">
+                            The Council is reading your documents to build a knowledge base.
+                        </Text>
+                        <View className="mt-6 flex-row items-center bg-blue-50 px-4 py-2 rounded-full">
+                            <ActivityIndicator size="small" color="#3B82F6" />
+                            <Text className="text-blue-600 font-bold ml-2 text-xs">Uploading Material</Text>
+                        </View>
                     </View>
                 </View>
             </Modal>

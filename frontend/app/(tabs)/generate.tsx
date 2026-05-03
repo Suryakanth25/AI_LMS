@@ -175,7 +175,7 @@ export default function GenerateScreen() {
                         <View className={`w-3 h-3 rounded-full mr-2 ${ollamaStatus?.available ? 'bg-green-500' : 'bg-red-500'}`} />
                         <Text className={`font-medium text-sm ${ollamaStatus?.available ? 'text-green-700' : 'text-red-700'}`}>
                             {ollamaStatus?.available
-                                ? `Ollama Running — ${(() => { const all = ollamaStatus.models || []; const council = all.filter((m: string) => /^(phi3|gemma2|qwen2\.5)/.test(m)); return council.length > 0 ? council.join(', ') : all.slice(0, 3).join(', '); })()}`
+                                ? `Ollama Running — ${(() => { const all = ollamaStatus.models || []; const council = all.filter((m: string) => /^(phi3|llama3\.2|qwen2\.5)/.test(m)); return council.length > 0 ? council.join(', ') : all.slice(0, 3).join(', '); })()}`
                                 : 'Ollama Not Running — Start Ollama first'}
                         </Text>
                     </View>
