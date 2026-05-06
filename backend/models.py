@@ -7,13 +7,28 @@ from datetime import datetime
 from database import Base
 
 
+class Faculty(Base):
+    __tablename__ = "faculty"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    email = Column(String(200), nullable=False, unique=True)
+    hashed_password = Column(String(500), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    subjects = relationship("Subject", back_populates="faculty")
+
+
 class Subject(Base):
     __tablename__ = "subjects"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String(200), nullable=False)
     code = Column(String(50), nullable=False, unique=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    faculty = relationship("Faculty", back_populates="subjects")
 
     units = relationship("Unit", back_populates="subject", cascade="all, delete-orphan")
     materials = relationship("StudyMaterial", back_populates="subject", cascade="all, delete-orphan")
